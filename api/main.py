@@ -468,3 +468,108 @@ async def get_structured_data(
     # MongoDBの_idを除外して返す
     structured.pop("_id", None)
     return structured
+
+
+@app.delete("/admin/files/{file_id}")
+async def delete_file(
+    file_id: str,
+    tenant: str = Query(default="default", description="テナントID"),
+):
+    """
+    ファイルと関連データを削除
+
+    【削除対象】
+    1. files コレクションのレコード
+    2. structured_data コレクションのレコード
+    3. 実ファイル（PDF、画像）
+
+    Args:
+        file_id: 削除するファイルのID
+        tenant: テナントID
+
+    Returns:
+        削除結果
+    """
+    import shutil
+
+    # ファイル情報を取得
+    file_doc = await db.files.find_one({"file_id": file_id, "tenant": tenant})
+    if not file_doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"ファイルが見つかりません: {file_id}"
+        )
+
+    # 実ファイルを削除（PDFと画像）
+    try:
+        # PDFファイルのディレクトリを削除
+        pdf_dir = DATA_DIR / tenant / "raw" / file_id
+        if pdf_dir.exists():
+            shutil.rmtree(pdf_dir)
+
+        # 画像ファイルのディレクトリを削除
+        images_dir = DATA_DIR / tenant / "images" / file_id
+        if images_dir.exists():
+            shutil.rmtree(images_dir)
+    except Exception as e:
+        # ファイル削除に失敗してもDB削除は続行
+        print(f"ファイル削除エラー: {e}")
+
+    # MongoDBから削除
+    await db.files.delete_one({"file_id": file_id, "tenant": tenant})
+    await db.structured_data.delete_one({"file_id": file_id, "tenant": tenant})
+
+    return {
+        "success": True,
+        "message": f"ファイル {file_doc['filename']} を削除しました",
+        "file_id": file_id
+    }
+
+
+# =============================================================================
+# チャットエンドポイント
+# =============================================================================
+
+
+class ChatRequest(BaseModel):
+    """チャットリクエスト"""
+    message: str
+    tenant: str = "default"
+
+
+class ChatResponse(BaseModel):
+    """チャットレスポンス"""
+    success: bool
+    response: str
+    search_performed: bool = False
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """
+    チャットエンドポイント
+
+    【処理の流れ】
+    1. ユーザーメッセージを受信
+    2. OpenAI GPT-4oが検索が必要か判断
+    3. 必要ならMCP経由でMongoDBを検索
+    4. 検索結果を元に回答を生成
+
+    Args:
+        request: チャットリクエスト（メッセージ、テナントID）
+
+    Returns:
+        AIの回答
+    """
+    from services.chat_service import process_chat
+
+    result = await process_chat(
+        message=request.message,
+        tenant=request.tenant
+    )
+
+    return ChatResponse(
+        success=result.get("success", False),
+        response=result.get("response", "エラーが発生しました"),
+        search_performed=result.get("search_performed", False)
+    )

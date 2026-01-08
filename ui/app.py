@@ -26,7 +26,7 @@ st.set_page_config(
 st.sidebar.title("📄 PDF構造化システム")
 page = st.sidebar.radio(
     "ページ選択",
-    ["🔧 Admin - PDF管理", "💬 User - チャット"],
+    ["💬 User - チャット", "🔧 Admin - PDF管理"],
     label_visibility="collapsed",
 )
 
@@ -175,6 +175,27 @@ def admin_page():
                                 if st.checkbox(f"JSON表示", key=f"json_{f['file_id']}"):
                                     st.json(data)
 
+                                # 削除ボタン
+                                st.divider()
+                                if st.button(
+                                    "🗑️ このファイルを削除",
+                                    key=f"delete_{f['file_id']}",
+                                    type="secondary"
+                                ):
+                                    try:
+                                        delete_response = requests.delete(
+                                            f"{API_URL}/admin/files/{f['file_id']}",
+                                            params={"tenant": tenant_id},
+                                            timeout=10,
+                                        )
+                                        if delete_response.status_code == 200:
+                                            st.success(f"✅ {f['filename']} を削除しました")
+                                            st.rerun()
+                                        else:
+                                            st.error("削除に失敗しました")
+                                    except requests.exceptions.RequestException as e:
+                                        st.error(f"通信エラー: {e}")
+
                             else:
                                 st.error("データ取得に失敗しました")
 
@@ -196,7 +217,17 @@ def admin_page():
 # =============================================================================
 def user_page():
     """ユーザー用ページ：構造化データに対してチャットで質問"""
-    st.title("💬 User - チャット")
+    st.title("💬 ドキュメントチャット")
+
+    # テナントID設定
+    tenant_id = st.sidebar.text_input(
+        "テナントID",
+        value="default",
+        help="検索対象のテナント",
+        key="chat_tenant"
+    )
+
+    st.caption("PDFから抽出した構造化データについて質問できます")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -205,7 +236,7 @@ def user_page():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if prompt := st.chat_input("質問を入力してください"):
+    if prompt := st.chat_input("質問を入力してください（例：〇〇について教えて）"):
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("user"):
@@ -213,10 +244,34 @@ def user_page():
 
         with st.chat_message("assistant"):
             with st.spinner("考え中..."):
-                response = f"🚧 フェーズ4で実装予定です。\n\n質問「{prompt}」を受け取りました。"
-                st.markdown(response)
+                try:
+                    response = requests.post(
+                        f"{API_URL}/chat",
+                        json={"message": prompt, "tenant": tenant_id},
+                        timeout=60,
+                    )
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
+                    if response.status_code == 200:
+                        result = response.json()
+                        answer = result.get("response", "回答を取得できませんでした")
+
+                        # 検索が行われたかどうかを表示
+                        if result.get("search_performed"):
+                            st.caption("🔍 ドキュメント検索を実行しました")
+
+                        st.markdown(answer)
+                    else:
+                        answer = f"エラーが発生しました (status: {response.status_code})"
+                        st.error(answer)
+
+                except requests.exceptions.Timeout:
+                    answer = "タイムアウトしました。もう一度お試しください。"
+                    st.error(answer)
+                except requests.exceptions.RequestException as e:
+                    answer = f"通信エラー: {e}"
+                    st.error(answer)
+
+        st.session_state.messages.append({"role": "assistant", "content": answer})
 
 
 # =============================================================================
@@ -226,24 +281,3 @@ if "Admin" in page:
     admin_page()
 else:
     user_page()
-
-
-# =============================================================================
-# APIヘルスチェック（サイドバー下部）
-# =============================================================================
-st.sidebar.divider()
-st.sidebar.caption("API接続状態")
-
-try:
-    response = requests.get(f"{API_URL}/health", timeout=2)
-    if response.status_code == 200:
-        data = response.json()
-        mongo_status = data.get("mongodb", "unknown")
-        if mongo_status == "connected":
-            st.sidebar.success("✅ API接続OK")
-        else:
-            st.sidebar.warning("⚠️ MongoDB未接続")
-    else:
-        st.sidebar.error(f"❌ API異常")
-except requests.exceptions.RequestException:
-    st.sidebar.error("❌ API接続失敗")

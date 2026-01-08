@@ -8,15 +8,11 @@
 # Model Context Protocol の略
 # AIモデル（Claude等）に「ツール」を提供するための標準規格
 #
-# 【フェーズ4で実装予定のツール】
-# - search_documents: MongoDB内のドキュメントを検索
-# - visualize_data: データをグラフ化
-# - predict_trend: 線形予測
-#
 # 【参考】https://github.com/jlowin/fastmcp
 # =============================================================================
 
 import os
+import re
 from fastmcp import FastMCP
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -75,77 +71,137 @@ def get_server_status() -> dict:
     """
     return {
         "status": "running",
-        "phase": 3,
+        "phase": 4,
         "openai_configured": bool(OPENAI_API_KEY),
         "available_tools": [
             "hello",
             "get_server_status",
-            # フェーズ4で追加予定:
-            # "search_documents",
-            # "visualize_data",
-            # "predict_trend",
+            "search_documents",
         ],
     }
 
 
 # =============================================================================
-# フェーズ4用ツール（プレースホルダー）
+# 検索ツール
 # =============================================================================
-# 以下はフェーズ4で実装予定
-#
-# @mcp.tool()
-# async def search_documents(query: str, tenant: str = "default") -> dict:
-#     """
-#     MongoDBから構造化データを検索
-#
-#     Args:
-#         query: 検索クエリ
-#         tenant: テナントID
-#
-#     Returns:
-#         検索結果
-#     """
-#     init_mongo()
-#     # MongoDB検索ロジック
-#     pass
-#
-#
-# @mcp.tool()
-# def visualize_data(data: list, chart_type: str = "bar") -> dict:
-#     """
-#     データをグラフ化
-#
-#     Args:
-#         data: グラフ化するデータ
-#         chart_type: グラフの種類（bar, line, pie等）
-#
-#     Returns:
-#         グラフデータ（base64画像等）
-#     """
-#     pass
-#
-#
-# @mcp.tool()
-# def predict_trend(data: list, periods: int = 3) -> dict:
-#     """
-#     線形予測を実行
-#
-#     Args:
-#         data: 予測の元となるデータ
-#         periods: 予測する期間数
-#
-#     Returns:
-#         予測結果
-#     """
-#     pass
+
+
+async def _search_documents_async(
+    query: str,
+    tenant: str = "default",
+    limit: int = 5
+) -> dict:
+    """
+    MongoDBから構造化データを検索する内部関数
+
+    【検索ロジック】
+    1. クエリをキーワードに分割
+    2. 各ページのtitle, summary, key_pointsを検索
+    3. マッチしたページを含むドキュメントを返す
+    """
+    init_mongo()
+
+    # クエリをキーワードに分割（日本語対応）
+    keywords = [k.strip() for k in re.split(r'[\s　]+', query) if k.strip()]
+
+    if not keywords:
+        return {"success": False, "error": "検索キーワードが空です", "results": []}
+
+    # 構造化データを取得
+    cursor = db.structured_data.find({"tenant": tenant})
+    all_docs = await cursor.to_list(100)
+
+    results = []
+
+    for doc in all_docs:
+        matched_pages = []
+
+        for page in doc.get("pages", []):
+            if "error" in page:
+                continue
+
+            page_data = page.get("data", {})
+            title = page_data.get("title") or ""
+            summary = page_data.get("summary") or ""
+            key_points = page_data.get("key_points") or []
+
+            # 検索対象テキストを結合
+            searchable_text = f"{title} {summary} {' '.join(key_points)}".lower()
+
+            # キーワードがマッチするかチェック
+            match_count = sum(1 for kw in keywords if kw.lower() in searchable_text)
+
+            if match_count > 0:
+                matched_pages.append({
+                    "page_number": page.get("page_number"),
+                    "title": title,
+                    "summary": summary,
+                    "key_points": key_points,
+                    "match_score": match_count / len(keywords)
+                })
+
+        if matched_pages:
+            # マッチスコアでソート
+            matched_pages.sort(key=lambda x: x["match_score"], reverse=True)
+
+            results.append({
+                "file_id": doc.get("file_id"),
+                "filename": doc.get("filename"),
+                "matched_pages": matched_pages[:3],  # 上位3ページ
+                "total_matches": len(matched_pages)
+            })
+
+    # 結果をマッチ数でソート
+    results.sort(key=lambda x: x["total_matches"], reverse=True)
+
+    return {
+        "success": True,
+        "query": query,
+        "keywords": keywords,
+        "total_documents": len(results),
+        "results": results[:limit]
+    }
+
+
+@mcp.tool()
+def search_documents(query: str, tenant: str = "default", limit: int = 5) -> dict:
+    """
+    構造化データからキーワード検索
+
+    PDFから抽出した構造化データ（タイトル、要約、重要ポイント）を検索し、
+    関連するページを返します。
+
+    Args:
+        query: 検索クエリ（スペース区切りでAND検索）
+        tenant: テナントID
+        limit: 返す結果の最大数
+
+    Returns:
+        検索結果（マッチしたドキュメントとページ）
+    """
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_search_documents_async(query, tenant, limit))
+    finally:
+        loop.close()
 
 
 # =============================================================================
-# HTTPエンドポイント（ヘルスチェック用）
+# HTTPエンドポイント（API連携用）
 # =============================================================================
 from fastapi import FastAPI
+from pydantic import BaseModel
 
 app = FastAPI()
+
+
+class SearchRequest(BaseModel):
+    """検索リクエスト"""
+    query: str
+    tenant: str = "default"
+    limit: int = 5
 
 
 @app.get("/api/health")
@@ -155,6 +211,21 @@ async def api_health():
         "status": "ok",
         "openai_configured": bool(OPENAI_API_KEY)
     }
+
+
+@app.post("/api/search")
+async def api_search(request: SearchRequest):
+    """
+    検索APIエンドポイント
+
+    APIサーバーからMCPの検索ツールを呼び出すためのエンドポイント
+    """
+    result = await _search_documents_async(
+        query=request.query,
+        tenant=request.tenant,
+        limit=request.limit
+    )
+    return result
 
 
 # =============================================================================

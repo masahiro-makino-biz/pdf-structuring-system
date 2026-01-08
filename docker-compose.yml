@@ -47,11 +47,13 @@ services:
       - ./data:/data  # 共有データフォルダ
     environment:
       - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先
+      - MCP_URL=http://mcp:8001  # MCPサーバーへの接続先（チャット検索用）
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # OpenAI APIキー（.envファイルから取得）
       - PYTHONIOENCODING=utf-8  # 日本語ファイル名対応
       - LANG=C.UTF-8
     depends_on:
       - mongo  # MongoDBが起動してからAPIを起動
+      - mcp  # MCPサーバーが起動してからAPIを起動
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
