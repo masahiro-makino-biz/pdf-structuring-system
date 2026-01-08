@@ -1,14 +1,43 @@
 # =============================================================================
 # mcp/requirements.txt - MCPツールサーバーの依存ライブラリ
 # =============================================================================
-# 【フェーズ1では最小限】フェーズ3で追加予定：
-#   - pdf2image: PDF→画像変換
-#   - Pillow: 画像加工
-#   - openai: OpenAI API連携
-# =============================================================================
+
+# 【FastAPI】WebAPIフレームワーク
+# 【用途】APIサーバーからMCPツールを呼び出すためのHTTPエンドポイント
+fastapi>=0.115.0
+
+# 【uvicorn】FastAPIを動かすためのASGIサーバー
+uvicorn>=0.34.0
 
 # 【FastMCP】MCPサーバーを簡単に作るためのフレームワーク
 # 【バージョン指定 <3】
 #   FastMCP 3.0は破壊的変更がある可能性があるため、2.x系を使用
 #   参考: https://github.com/jlowin/fastmcp
 fastmcp>=2.0.0,<3
+
+# 【pdf2image】PDF→画像変換ライブラリ
+# 【内部でpopplerを使用】
+#   - poppler: PDFを処理するC++ライブラリ
+#   - Dockerfileでpoppler-utilsをインストールする必要がある
+# 【他の選択肢】
+#   - PyMuPDF(fitz): 高速だがライセンスがAGPL
+#   - pikepdf: PDFの編集向け、画像変換には不向き
+pdf2image>=1.16.0
+
+# 【Pillow】Python画像処理ライブラリ
+# 【用途】
+#   - 画像のリサイズ、回転
+#   - 画像のBase64エンコード（OpenAI APIに送信用）
+Pillow>=10.0.0
+
+# 【openai】OpenAI公式Pythonクライアント
+# 【用途】
+#   - GPT-4V（Vision）で画像を解析
+#   - 構造化データ（JSON）を抽出
+openai>=1.0.0
+
+# 【motor】MongoDB非同期ドライバ
+# 【用途】
+#   - 構造化データをMongoDBに保存
+#   - 非同期で他の処理をブロックしない
+motor>=3.0.0

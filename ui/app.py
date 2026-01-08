@@ -1,10 +1,6 @@
 # =============================================================================
 # ui/app.py - Streamlit メイン画面
 # =============================================================================
-# 【このファイルの役割】
-# ユーザーが操作するWebの画面を定義
-# Admin画面（PDF管理）とUser画面（チャット）の2つのページを持つ
-# =============================================================================
 
 import streamlit as st
 import requests
@@ -39,45 +35,37 @@ page = st.sidebar.radio(
 # Admin画面 - PDF管理
 # =============================================================================
 def admin_page():
-    """管理者用ページ：PDFのアップロード、ファイル一覧"""
-    st.title("🔧 Admin - PDF管理")
+    """管理者用ページ：PDFアップロード → 自動構造化 → 一覧表示"""
+    st.title("🔧 PDF構造化システム")
 
     # -------------------------------------------------------------------------
-    # PDFアップロードセクション
+    # PDFアップロード & テナントID
     # -------------------------------------------------------------------------
-    st.header("📤 PDFアップロード")
-
-    uploaded_file = st.file_uploader(
-        "PDFファイルを選択",
-        type=["pdf"],
-        help="アップロードするPDFファイルを選んでください",
-    )
-
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([3, 1])
 
     with col1:
-        tenant_id = st.text_input(
-            "テナントID",
-            value="default",
-            help="データを分けるための識別子。通常はそのまま「default」でOK",
+        uploaded_file = st.file_uploader(
+            "PDFファイルをアップロード",
+            type=["pdf"],
+            help="アップロード後、自動的にAI解析が実行されます",
         )
 
     with col2:
-        upload_button = st.button(
-            "アップロード実行",
-            type="primary",
-            disabled=(uploaded_file is None),
+        tenant_id = st.text_input(
+            "テナントID",
+            value="default",
+            help="データを分けるための識別子",
         )
 
     # -------------------------------------------------------------------------
-    # アップロード処理
+    # アップロード → 自動処理
     # -------------------------------------------------------------------------
-    if upload_button and uploaded_file:
-        with st.spinner("アップロード中..."):
+    if uploaded_file:
+        # アップロード
+        with st.status("処理中...", expanded=True) as status:
+            st.write("📤 ファイルをアップロード中...")
+
             try:
-                # 【requests.post でファイルを送信】
-                # files パラメータにファイルを指定
-                # params パラメータにクエリパラメータを指定
                 response = requests.post(
                     f"{API_URL}/admin/files",
                     files={"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")},
@@ -87,35 +75,49 @@ def admin_page():
 
                 if response.status_code == 200:
                     result = response.json()
-                    st.success(f"✅ アップロード成功！")
+                    file_id = result["file_id"]
+                    st.write(f"✅ アップロード完了: {result['filename']}")
 
-                    # 【st.json】JSON形式でデータを表示
-                    # デバッグやデータ確認に便利
-                    st.json(result)
+                    # 自動でAI処理を実行
+                    st.write("🤖 AI解析中...（数分かかる場合があります）")
+
+                    process_response = requests.post(
+                        f"{API_URL}/admin/process/{file_id}",
+                        params={"tenant": tenant_id},
+                        timeout=300,
+                    )
+
+                    if process_response.status_code == 200:
+                        process_result = process_response.json()
+                        if process_result.get("success"):
+                            st.write(f"✅ 解析完了: {process_result.get('pages_processed')}ページ処理")
+                            status.update(label="処理完了！", state="complete")
+                        else:
+                            st.write(f"⚠️ 解析エラー: {process_result.get('error')}")
+                            status.update(label="エラーあり", state="error")
+                    else:
+                        st.write("❌ AI処理に失敗しました")
+                        status.update(label="処理失敗", state="error")
+
                 else:
-                    # 【エラーレスポンスの表示】
                     error_detail = response.json().get("detail", "不明なエラー")
-                    st.error(f"❌ アップロード失敗: {error_detail}")
+                    st.write(f"❌ アップロード失敗: {error_detail}")
+                    status.update(label="アップロード失敗", state="error")
 
+            except requests.exceptions.Timeout:
+                st.write("❌ タイムアウト")
+                status.update(label="タイムアウト", state="error")
             except requests.exceptions.RequestException as e:
-                # 【通信エラー】
-                st.error(f"❌ API通信エラー: {e}")
+                st.write(f"❌ 通信エラー: {e}")
+                status.update(label="通信エラー", state="error")
 
     # -------------------------------------------------------------------------
-    # アップロード済みファイル一覧
+    # 構造化データ一覧
     # -------------------------------------------------------------------------
-    st.header("📋 アップロード済みファイル一覧")
-
-    # 【更新ボタン】
-    # ファイル一覧を再取得するためのボタン
-    if st.button("🔄 一覧を更新"):
-        # 【st.rerun()】ページを再実行
-        # Streamlitは画面更新のたびにスクリプト全体が再実行される
-        # rerun()を呼ぶと明示的に再実行できる
-        st.rerun()
+    st.divider()
+    st.header("📊 構造化データ一覧")
 
     try:
-        # 【ファイル一覧を取得】
         response = requests.get(
             f"{API_URL}/admin/files",
             params={"tenant": tenant_id},
@@ -124,58 +126,69 @@ def admin_page():
 
         if response.status_code == 200:
             files = response.json()
+            processed_files = [f for f in files if f.get("processed", False)]
 
-            if files:
-                # 【st.dataframe】テーブル形式でデータを表示
-                # Pandasのデータフレームやリストを渡せる
-                st.dataframe(
-                    [
-                        {
-                            "ファイルID": f["file_id"][:8] + "...",  # 長いので省略
-                            "ファイル名": f["filename"],
-                            "サイズ": f"{f['size'] / 1024:.1f} KB",
-                            "アップロード日時": f["uploaded_at"],
-                        }
-                        for f in files
-                    ],
-                    use_container_width=True,
-                )
+            if processed_files:
+                for f in processed_files:
+                    with st.expander(f"📄 {f['filename']}", expanded=False):
+                        # 構造化データを取得して表示
+                        try:
+                            struct_response = requests.get(
+                                f"{API_URL}/admin/structured/{f['file_id']}",
+                                params={"tenant": tenant_id},
+                                timeout=10,
+                            )
 
-                # -------------------------------------------------------------------------
-                # ファイル詳細表示
-                # -------------------------------------------------------------------------
-                st.subheader("📄 ファイル詳細")
+                            if struct_response.status_code == 200:
+                                data = struct_response.json()
 
-                # 【st.selectbox】ドロップダウン選択
-                selected_file = st.selectbox(
-                    "ファイルを選択",
-                    options=files,
-                    format_func=lambda f: f["filename"],  # 表示形式を指定
-                )
+                                st.caption(f"処理日時: {data.get('processed_at', 'N/A')}")
 
-                if selected_file:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**ファイルID:**", selected_file["file_id"])
-                        st.write("**ファイル名:**", selected_file["filename"])
-                    with col2:
-                        st.write("**パス:**", selected_file["path"])
-                        st.write("**サイズ:**", f"{selected_file['size'] / 1024:.1f} KB")
+                                pages = data.get("pages", [])
+                                for page in pages:
+                                    page_num = page.get("page_number", "?")
+
+                                    if "error" in page:
+                                        st.error(f"ページ {page_num}: {page['error']}")
+                                    else:
+                                        page_data = page.get("data", {})
+
+                                        st.markdown(f"**ページ {page_num}**")
+
+                                        title = page_data.get("title")
+                                        if title:
+                                            st.write(f"タイトル: {title}")
+
+                                        summary = page_data.get("summary")
+                                        if summary:
+                                            st.write(f"要約: {summary}")
+
+                                        key_points = page_data.get("key_points", [])
+                                        if key_points:
+                                            st.write("重要ポイント:")
+                                            for point in key_points:
+                                                st.write(f"  • {point}")
+
+                                        st.divider()
+
+                                # JSON表示オプション
+                                if st.checkbox(f"JSON表示", key=f"json_{f['file_id']}"):
+                                    st.json(data)
+
+                            else:
+                                st.error("データ取得に失敗しました")
+
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"通信エラー: {e}")
 
             else:
-                st.info("📭 まだファイルがアップロードされていません")
+                st.info("📭 まだ構造化されたデータはありません。PDFをアップロードしてください。")
 
         else:
-            st.error(f"❌ ファイル一覧の取得に失敗しました (status: {response.status_code})")
+            st.error(f"❌ データ取得に失敗しました (status: {response.status_code})")
 
     except requests.exceptions.RequestException as e:
         st.error(f"❌ API通信エラー: {e}")
-
-    # -------------------------------------------------------------------------
-    # 処理ジョブ一覧（フェーズ3で実装）
-    # -------------------------------------------------------------------------
-    st.header("⏳ 処理ジョブ一覧")
-    st.info("🚧 フェーズ3で実装予定：PDFの画像化・構造化ジョブを表示します")
 
 
 # =============================================================================
@@ -185,16 +198,13 @@ def user_page():
     """ユーザー用ページ：構造化データに対してチャットで質問"""
     st.title("💬 User - チャット")
 
-    # セッションステートでチャット履歴を管理
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # チャット履歴の表示
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # チャット入力
     if prompt := st.chat_input("質問を入力してください"):
         st.session_state.messages.append({"role": "user", "content": prompt})
 
@@ -203,7 +213,6 @@ def user_page():
 
         with st.chat_message("assistant"):
             with st.spinner("考え中..."):
-                # フェーズ4で実装：APIにリクエストを送信
                 response = f"🚧 フェーズ4で実装予定です。\n\n質問「{prompt}」を受け取りました。"
                 st.markdown(response)
 
@@ -232,10 +241,9 @@ try:
         mongo_status = data.get("mongodb", "unknown")
         if mongo_status == "connected":
             st.sidebar.success("✅ API接続OK")
-            st.sidebar.caption("MongoDB: 接続済み")
         else:
-            st.sidebar.warning("⚠️ API接続OK (MongoDB未接続)")
+            st.sidebar.warning("⚠️ MongoDB未接続")
     else:
-        st.sidebar.error(f"❌ API異常 (status: {response.status_code})")
+        st.sidebar.error(f"❌ API異常")
 except requests.exceptions.RequestException:
     st.sidebar.error("❌ API接続失敗")

@@ -1,34 +1,53 @@
 # =============================================================================
-# mcp/server.py - FastMCP ツールサーバー（スケルトン）
+# mcp/server.py - FastMCP ツールサーバー
 # =============================================================================
 # 【このファイルの役割】
-# PDF処理、画像加工、AI呼び出しなどのツールを提供するMCPサーバー
-# フェーズ1では動作確認用の最小限のツールのみ
+# AIエージェントが使用するツールを提供するMCPサーバー
 #
 # 【MCPとは】
 # Model Context Protocol の略
 # AIモデル（Claude等）に「ツール」を提供するための標準規格
-# 例：「PDFを画像に変換して」→ pdf_to_page_images ツールが呼ばれる
+#
+# 【フェーズ4で実装予定のツール】
+# - search_documents: MongoDB内のドキュメントを検索
+# - visualize_data: データをグラフ化
+# - predict_trend: 線形予測
 #
 # 【参考】https://github.com/jlowin/fastmcp
 # =============================================================================
 
+import os
 from fastmcp import FastMCP
+from motor.motor_asyncio import AsyncIOMotorClient
+
+# =============================================================================
+# 設定
+# =============================================================================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 
 # =============================================================================
 # MCPサーバーの作成
 # =============================================================================
-# 【FastMCP()とは】
-# MCPサーバーのインスタンスを作成
-# FastAPIと似た書き方でツールを定義できる
-#
-# 【引数の意味】
-#   - "pdf-tools": サーバーの名前（クライアントが識別に使う）
 mcp = FastMCP("pdf-tools")
+
+# =============================================================================
+# MongoDB接続
+# =============================================================================
+mongo_client: AsyncIOMotorClient = None
+db = None
+
+
+def init_mongo():
+    """MongoDB接続を初期化"""
+    global mongo_client, db
+    if mongo_client is None:
+        mongo_client = AsyncIOMotorClient(MONGO_URL)
+        db = mongo_client.pdf_system
 
 
 # =============================================================================
-# ツールの定義（スケルトン）
+# MCPツール（基本）
 # =============================================================================
 
 
@@ -36,17 +55,6 @@ mcp = FastMCP("pdf-tools")
 def hello(name: str = "World") -> str:
     """
     動作確認用のシンプルなツール
-
-    【デコレータ @mcp.tool() とは】
-    この関数をMCPツールとして公開する
-    AIが「helloツールを使って」と言うと、この関数が呼ばれる
-
-    【引数の型ヒント name: str】
-    MCPはこの型情報を使って、AIに「nameは文字列です」と伝える
-    AIが適切な形式でパラメータを渡せるようになる
-
-    【戻り値の型ヒント -> str】
-    この関数が文字列を返すことを宣言
 
     Args:
         name: 挨拶する相手の名前
@@ -62,73 +70,102 @@ def get_server_status() -> dict:
     """
     サーバーの状態を返す
 
-    【戻り値が dict の場合】
-    MCPが自動でJSONに変換して返す
-
     Returns:
         サーバーの状態情報
     """
     return {
         "status": "running",
-        "phase": 1,
-        "available_tools": ["hello", "get_server_status"],
-        "coming_soon": [
-            "pdf_to_page_images",
-            "image_preprocess",
-            "detect_regions",
-            "crop_regions",
-            "extract_structured_from_images",
+        "phase": 3,
+        "openai_configured": bool(OPENAI_API_KEY),
+        "available_tools": [
+            "hello",
+            "get_server_status",
+            # フェーズ4で追加予定:
+            # "search_documents",
+            # "visualize_data",
+            # "predict_trend",
         ],
     }
 
 
 # =============================================================================
-# 【フェーズ3で実装予定のツール】
+# フェーズ4用ツール（プレースホルダー）
 # =============================================================================
-# @mcp.tool()
-# def pdf_to_page_images(pdf_path: str, tenant: str, job_id: str, dpi: int = 200):
-#     """PDFを1ページずつ画像に変換"""
-#     pass
+# 以下はフェーズ4で実装予定
 #
 # @mcp.tool()
-# def image_preprocess(image_path: str, ops: list, out_path: str):
-#     """画像の前処理（コントラスト調整、ノイズ除去等）"""
+# async def search_documents(query: str, tenant: str = "default") -> dict:
+#     """
+#     MongoDBから構造化データを検索
+#
+#     Args:
+#         query: 検索クエリ
+#         tenant: テナントID
+#
+#     Returns:
+#         検索結果
+#     """
+#     init_mongo()
+#     # MongoDB検索ロジック
 #     pass
 #
-# @mcp.tool()
-# def detect_regions(image_path: str, hint: str):
-#     """画像内の領域（表、テキスト、図等）を検出"""
-#     pass
 #
 # @mcp.tool()
-# def crop_regions(image_path: str, regions: list, out_dir: str):
-#     """検出した領域を切り出して保存"""
+# def visualize_data(data: list, chart_type: str = "bar") -> dict:
+#     """
+#     データをグラフ化
+#
+#     Args:
+#         data: グラフ化するデータ
+#         chart_type: グラフの種類（bar, line, pie等）
+#
+#     Returns:
+#         グラフデータ（base64画像等）
+#     """
 #     pass
 #
+#
 # @mcp.tool()
-# def extract_structured_from_images(image_paths: list, schema: dict, prompt_opts: dict):
-#     """画像からOpenAI APIを使って構造化データを抽出"""
+# def predict_trend(data: list, periods: int = 3) -> dict:
+#     """
+#     線形予測を実行
+#
+#     Args:
+#         data: 予測の元となるデータ
+#         periods: 予測する期間数
+#
+#     Returns:
+#         予測結果
+#     """
 #     pass
+
+
 # =============================================================================
+# HTTPエンドポイント（ヘルスチェック用）
+# =============================================================================
+from fastapi import FastAPI
+
+app = FastAPI()
+
+
+@app.get("/api/health")
+async def api_health():
+    """ヘルスチェック"""
+    return {
+        "status": "ok",
+        "openai_configured": bool(OPENAI_API_KEY)
+    }
 
 
 # =============================================================================
 # サーバー起動
 # =============================================================================
 if __name__ == "__main__":
-    # 【mcp.run()】MCPサーバーを起動
-    #
-    # 【transport="sse"】Server-Sent Eventsを使用（HTTPベースの通信）
-    #   - SSE: ブラウザやHTTPクライアントからアクセス可能
-    #   - Webサービスとして動かす場合に使う
-    #
-    # 【transport="stdio"】標準入出力を使用
-    #   - Claude Desktop等のローカルアプリ向け
-    #   - 今回はコンテナ間通信なのでSSEを使用
-    #
-    # 【port=8001】待ち受けポート番号
-    #
-    # 【host="0.0.0.0"】
-    #   - 0.0.0.0 = 全てのネットワークインターフェースで待ち受け
-    #   - Dockerコンテナ外からアクセスするために必要
-    mcp.run(transport="sse", host="0.0.0.0", port=8001)
+    import uvicorn
+
+    if OPENAI_API_KEY:
+        print("✅ OpenAI API Key configured")
+    else:
+        print("⚠️ OpenAI API Key not set. Set OPENAI_API_KEY in .env file.")
+
+    uvicorn.run(app, host="0.0.0.0", port=8001)

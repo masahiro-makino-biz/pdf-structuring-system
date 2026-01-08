@@ -123,6 +123,8 @@ class FileUploadResponse(BaseModel):
     uploaded_at: str
 
 
+from typing import Optional
+
 class FileInfo(BaseModel):
     """ファイル情報"""
     file_id: str
@@ -131,6 +133,8 @@ class FileInfo(BaseModel):
     size: int
     tenant: str
     uploaded_at: str
+    processed: bool = False
+    processed_at: Optional[str] = None
 
 
 # =============================================================================
@@ -293,6 +297,8 @@ async def list_files(
             size=f["size"],
             tenant=f["tenant"],
             uploaded_at=f["uploaded_at"].isoformat(),
+            processed=f.get("processed", False),
+            processed_at=f["processed_at"].isoformat() if f.get("processed_at") else None,
         )
         for f in files
     ]
@@ -349,3 +355,116 @@ async def get_file(
     # ファイルをHTTPレスポンスとして返すためのクラス
     # 自動でContent-Typeを設定してくれる
     return FileResponse(file_path)
+
+
+# =============================================================================
+# PDF処理エンドポイント
+# =============================================================================
+
+
+class ProcessResponse(BaseModel):
+    """PDF処理のレスポンス"""
+    success: bool
+    file_id: str
+    filename: str = None
+    total_pages: int = None
+    pages_processed: int = None
+    pages_with_errors: int = None
+    error: str = None
+
+
+@app.post("/admin/process/{file_id}", response_model=ProcessResponse)
+async def process_pdf_endpoint(
+    file_id: str,
+    tenant: str = Query(default="default", description="テナントID"),
+):
+    """
+    アップロード済みPDFをAI処理
+
+    【処理の流れ】
+    1. ファイル情報をMongoDBから取得
+    2. PDFを画像に変換
+    3. 各ページをGPT-4oで解析
+    4. 構造化データをMongoDBに保存
+
+    Args:
+        file_id: 処理するファイルのID
+        tenant: テナントID
+
+    Returns:
+        処理結果
+    """
+    from services.pdf_processor import process_pdf
+
+    # ファイルの存在確認
+    file_doc = await db.files.find_one({"file_id": file_id, "tenant": tenant})
+    if not file_doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"ファイルが見つかりません: {file_id}"
+        )
+
+    try:
+        # PDF処理サービスを呼び出し
+        result = await process_pdf(db, file_id, tenant)
+
+        if result.get("success"):
+            return ProcessResponse(
+                success=True,
+                file_id=file_id,
+                filename=result.get("filename"),
+                total_pages=result.get("total_pages"),
+                pages_processed=result.get("pages_processed"),
+                pages_with_errors=result.get("pages_with_errors"),
+            )
+        else:
+            return ProcessResponse(
+                success=False,
+                file_id=file_id,
+                error=result.get("error", "処理に失敗しました")
+            )
+
+    except Exception as e:
+        return ProcessResponse(
+            success=False,
+            file_id=file_id,
+            error=f"処理エラー: {str(e)}"
+        )
+
+
+# =============================================================================
+# 構造化データ取得エンドポイント
+# =============================================================================
+
+
+@app.get("/admin/structured/{file_id}")
+async def get_structured_data(
+    file_id: str,
+    tenant: str = Query(default="default", description="テナントID"),
+):
+    """
+    構造化データを取得
+
+    【用途】
+    AI処理が完了した後、その結果を取得するためのエンドポイント
+
+    Args:
+        file_id: ファイルID
+        tenant: テナントID
+
+    Returns:
+        構造化データ
+    """
+    structured = await db.structured_data.find_one(
+        {"file_id": file_id, "tenant": tenant}
+    )
+
+    if not structured:
+        raise HTTPException(
+            status_code=404,
+            detail=f"構造化データが見つかりません: {file_id}"
+        )
+
+    # MongoDBの_idを除外して返す
+    structured.pop("_id", None)
+    return structured

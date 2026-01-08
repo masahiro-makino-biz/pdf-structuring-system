@@ -37,6 +37,14 @@ WORKDIR /app
 # 2. pip install 実行
 # 3. 残りのソースコードをコピー
 # → ソースコードだけ変えた場合、pip installは再実行されない（キャッシュ活用）
+
+# ---------------------------------------------------------------------------
+# システムライブラリのインストール
+# ---------------------------------------------------------------------------
+# 【poppler-utilsとは】PDF処理に必要なライブラリ
+# pdf2imageがPDFを画像に変換する際に使用する
+RUN apt-get update && apt-get install -y poppler-utils && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

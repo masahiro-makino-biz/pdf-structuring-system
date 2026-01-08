@@ -47,6 +47,9 @@ services:
       - ./data:/data  # 共有データフォルダ
     environment:
       - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # OpenAI APIキー（.envファイルから取得）
+      - PYTHONIOENCODING=utf-8  # 日本語ファイル名対応
+      - LANG=C.UTF-8
     depends_on:
       - mongo  # MongoDBが起動してからAPIを起動
     restart: unless-stopped
@@ -93,7 +96,10 @@ services:
       - ./mcp:/app
       - ./data:/data
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # 環境変数から取得（後で設定）
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # 環境変数から取得（.envファイルに設定）
+      - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先（構造化データ保存用）
+      - PYTHONIOENCODING=utf-8  # 日本語ファイル名対応
+      - LANG=C.UTF-8
     depends_on:
       - mongo
     restart: unless-stopped
