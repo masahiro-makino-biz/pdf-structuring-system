@@ -236,6 +236,33 @@ def admin_page():
 # =============================================================================
 # User画面 - チャット
 # =============================================================================
+
+
+def show_reference_pages(ref_pages: list, key_prefix: str = ""):
+    """
+    参照元ページを折りたたみ式で表示するヘルパー関数
+
+    【なぜヘルパー関数にしたか】
+    - 新規回答時と履歴表示時で同じ表示ロジックを使うため
+    - コードの重複を避けて保守しやすくする
+
+    Args:
+        ref_pages: 参照ページ情報のリスト
+        key_prefix: Streamlitのkey重複を避けるためのプレフィックス
+    """
+    if not ref_pages:
+        return
+
+    # expanderで折りたたみ式にする（タップで展開）
+    with st.expander(f"📄 参照元ページ（{len(ref_pages)}件）", expanded=False):
+        # タブで切り替え表示
+        tab_labels = [f"{p['filename']} P{p['page_number']}" for p in ref_pages]
+        tabs = st.tabs(tab_labels)
+        for tab, page_info in zip(tabs, ref_pages):
+            with tab:
+                st.image(page_info["image_path"], caption=page_info.get("title", ""))
+
+
 def user_page():
     """ユーザー用ページ：構造化データに対してチャットで質問"""
     st.title("ドキュメントチャット")
@@ -253,9 +280,13 @@ def user_page():
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
+    # 履歴表示（検索結果の画像も含む）
+    for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            # アシスタントの回答に参照ページがあれば表示
+            if message["role"] == "assistant" and message.get("ref_pages"):
+                show_reference_pages(message["ref_pages"], key_prefix=f"history_{i}_")
 
     if prompt := st.chat_input("質問を入力してください（例：〇〇について教えて）"):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -275,24 +306,48 @@ def user_page():
                     if response.status_code == 200:
                         result = response.json()
                         answer = result.get("response", "回答を取得できませんでした")
+                        ref_pages = []  # 参照ページを保存用に初期化
 
                         # 検索が行われたかどうかを表示
                         if result.get("search_performed"):
                             st.caption("ドキュメント検索を実行しました")
 
                         st.markdown(answer)
+
+                        # 検索結果に画像がある場合、収集して表示
+                        if result.get("search_results") and result["search_results"].get("results"):
+                            for doc in result["search_results"]["results"]:
+                                for page in doc.get("matched_pages", []):
+                                    if page.get("image_path"):
+                                        ref_pages.append({
+                                            "filename": doc["filename"],
+                                            "page_number": page["page_number"],
+                                            "image_path": page["image_path"],
+                                            "title": page.get("title", "")
+                                        })
+
+                            # 折りたたみ式で画像表示
+                            show_reference_pages(ref_pages, key_prefix="new_")
                     else:
                         answer = f"エラーが発生しました (status: {response.status_code})"
+                        ref_pages = []
                         st.error(answer)
 
                 except requests.exceptions.Timeout:
                     answer = "タイムアウトしました。もう一度お試しください。"
+                    ref_pages = []
                     st.error(answer)
                 except requests.exceptions.RequestException as e:
                     answer = f"通信エラー: {e}"
+                    ref_pages = []
                     st.error(answer)
 
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        # 回答と参照ページを履歴に保存
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": answer,
+            "ref_pages": ref_pages  # 参照ページも保存（次の会話でも表示される）
+        })
 
 
 # =============================================================================

@@ -137,7 +137,8 @@ async def _search_documents_async(
                     "title": title,
                     "summary": summary,
                     "key_points": key_points,
-                    "match_score": match_count / len(keywords)
+                    "match_score": match_count / len(keywords),
+                    "image_path": page.get("image_path", "")  # 元画像のパス
                 })
 
         if matched_pages:

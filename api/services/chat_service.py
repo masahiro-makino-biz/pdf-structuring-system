@@ -19,7 +19,7 @@ from .agent_config import get_chat_client
 MCP_URL = os.getenv("MCP_URL", "http://mcp:8001")
 
 # ---------------------------------------------------------------------------
-# テナント情報の保持
+# テナント情報と検索結果の保持
 # ---------------------------------------------------------------------------
 # 【なぜグローバル変数か】
 # @ai_function で定義したツール関数は、Agent Frameworkから呼び出されるため、
@@ -29,6 +29,7 @@ MCP_URL = os.getenv("MCP_URL", "http://mcp:8001")
 # - ContextVar を使ってスレッドセーフにする方法もある
 # - 今回はシングルリクエストの処理なので、シンプルにグローバル変数を使用
 _current_tenant = "default"
+_last_search_results = None  # 検索結果を保持（UIで画像表示に使用）
 
 
 # =============================================================================
@@ -82,8 +83,11 @@ async def search_documents(
     PDFから抽出した構造化データを検索する。
     ユーザーが特定のトピックや情報について質問した時に使用する。
     """
+    global _last_search_results
     # グローバル変数からテナント情報を取得
     result = await call_mcp_search(query, _current_tenant)
+    # 検索結果を保持（UIで画像表示に使用）
+    _last_search_results = result
     # Agent Frameworkは文字列を期待するのでJSONに変換
     return json.dumps(result, ensure_ascii=False)
 
@@ -134,7 +138,7 @@ async def process_chat(message: str, tenant: str = "default") -> dict:
     1. テナント情報をグローバル変数に設定
     2. エージェントを作成
     3. agent.run()でメッセージを処理（ツール呼び出しも自動処理）
-    4. 結果を返す
+    4. 結果を返す（検索結果も含む）
 
     【従来との違い】
     - 従来: 2回のAPI呼び出し（ツール判断 → 結果取得）を自分で制御
@@ -147,8 +151,9 @@ async def process_chat(message: str, tenant: str = "default") -> dict:
     Returns:
         回答と検索情報を含む辞書
     """
-    global _current_tenant
+    global _current_tenant, _last_search_results
     _current_tenant = tenant
+    _last_search_results = None  # 検索結果をリセット
 
     try:
         # エージェントを作成
@@ -160,7 +165,8 @@ async def process_chat(message: str, tenant: str = "default") -> dict:
         return {
             "success": True,
             "response": result.text,
-            "search_performed": True  # Agent Frameworkでは検索有無の詳細追跡は難しい
+            "search_performed": _last_search_results is not None,
+            "search_results": _last_search_results  # 検索結果を返す（UIで画像表示に使用）
         }
 
     except ValueError as e:

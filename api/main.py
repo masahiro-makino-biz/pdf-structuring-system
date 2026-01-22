@@ -542,6 +542,7 @@ class ChatResponse(BaseModel):
     success: bool
     response: str
     search_performed: bool = False
+    search_results: dict | None = None  # 検索結果（画像パス含む）
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -571,5 +572,6 @@ async def chat(request: ChatRequest):
     return ChatResponse(
         success=result.get("success", False),
         response=result.get("response", "エラーが発生しました"),
-        search_performed=result.get("search_performed", False)
+        search_performed=result.get("search_performed", False),
+        search_results=result.get("search_results")  # 検索結果（画像パス含む）
     )
