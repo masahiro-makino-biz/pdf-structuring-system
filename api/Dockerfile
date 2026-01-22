@@ -43,7 +43,12 @@ WORKDIR /app
 # ---------------------------------------------------------------------------
 # 【poppler-utilsとは】PDF処理に必要なライブラリ
 # pdf2imageがPDFを画像に変換する際に使用する
-RUN apt-get update && apt-get install -y poppler-utils && rm -rf /var/lib/apt/lists/*
+# 【fonts-noto-cjkとは】日本語・中国語・韓国語フォント
+# これがないと日本語PDFが文字化けする（□□□のような「豆腐」になる）
+RUN apt-get update && apt-get install -y \
+    poppler-utils \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -16,17 +16,16 @@ API_URL = os.getenv("API_URL", "http://localhost:8000")
 # =============================================================================
 st.set_page_config(
     page_title="PDF構造化システム",
-    page_icon="📄",
     layout="wide",
 )
 
 # =============================================================================
 # サイドバー - ページ選択
 # =============================================================================
-st.sidebar.title("📄 PDF構造化システム")
+st.sidebar.title("PDF構造化システム")
 page = st.sidebar.radio(
     "ページ選択",
-    ["💬 User - チャット", "🔧 Admin - PDF管理"],
+    ["User - チャット", "Admin - PDF管理"],
     label_visibility="collapsed",
 )
 
@@ -36,86 +35,108 @@ page = st.sidebar.radio(
 # =============================================================================
 def admin_page():
     """管理者用ページ：PDFアップロード → 自動構造化 → 一覧表示"""
-    st.title("🔧 PDF構造化システム")
+    st.title("PDF構造化システム")
 
     # -------------------------------------------------------------------------
-    # PDFアップロード & テナントID
+    # サイドバー - テナントID設定
     # -------------------------------------------------------------------------
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-        uploaded_file = st.file_uploader(
-            "PDFファイルをアップロード",
-            type=["pdf"],
-            help="アップロード後、自動的にAI解析が実行されます",
-        )
-
-    with col2:
-        tenant_id = st.text_input(
-            "テナントID",
-            value="default",
-            help="データを分けるための識別子",
-        )
+    tenant_id = st.sidebar.text_input(
+        "テナントID",
+        value="default",
+        help="データを分けるための識別子",
+        key="admin_tenant"
+    )
 
     # -------------------------------------------------------------------------
-    # アップロード → 自動処理
+    # session_state 初期化（処理済みファイルを追跡）
+    # -------------------------------------------------------------------------
+    if "processed_files" not in st.session_state:
+        st.session_state.processed_files = set()
+
+    # -------------------------------------------------------------------------
+    # PDFアップロード
+    # -------------------------------------------------------------------------
+    uploaded_file = st.file_uploader(
+        "PDFファイルをアップロード",
+        type=["pdf"],
+        help="アップロード後、自動的にAI解析が実行されます",
+    )
+
+    # -------------------------------------------------------------------------
+    # アップロード → ボタンで処理開始
     # -------------------------------------------------------------------------
     if uploaded_file:
-        # アップロード
-        with st.status("処理中...", expanded=True) as status:
-            st.write("📤 ファイルをアップロード中...")
+        # ファイルを一意に識別するキー（ファイル名 + サイズ）
+        file_key = f"{uploaded_file.name}_{uploaded_file.size}"
 
-            try:
-                response = requests.post(
-                    f"{API_URL}/admin/files",
-                    files={"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")},
-                    params={"tenant": tenant_id},
-                    timeout=30,
-                )
+        # まだ処理していないファイルの場合
+        if file_key not in st.session_state.processed_files:
+            st.info(f"選択中: {uploaded_file.name} ({uploaded_file.size:,} bytes)")
 
-                if response.status_code == 200:
-                    result = response.json()
-                    file_id = result["file_id"]
-                    st.write(f"✅ アップロード完了: {result['filename']}")
+            if st.button("アップロードして処理開始", type="primary"):
+                with st.status("処理中...", expanded=True) as status:
+                    st.write("ファイルをアップロード中...")
 
-                    # 自動でAI処理を実行
-                    st.write("🤖 AI解析中...（数分かかる場合があります）")
+                    try:
+                        response = requests.post(
+                            f"{API_URL}/admin/files",
+                            files={"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")},
+                            params={"tenant": tenant_id},
+                            timeout=30,
+                        )
 
-                    process_response = requests.post(
-                        f"{API_URL}/admin/process/{file_id}",
-                        params={"tenant": tenant_id},
-                        timeout=300,
-                    )
+                        if response.status_code == 200:
+                            result = response.json()
+                            file_id = result["file_id"]
+                            st.write(f"アップロード完了: {result['filename']}")
 
-                    if process_response.status_code == 200:
-                        process_result = process_response.json()
-                        if process_result.get("success"):
-                            st.write(f"✅ 解析完了: {process_result.get('pages_processed')}ページ処理")
-                            status.update(label="処理完了！", state="complete")
+                            # 自動でAI処理を実行
+                            st.write("AI解析中...（数分かかる場合があります）")
+
+                            process_response = requests.post(
+                                f"{API_URL}/admin/process/{file_id}",
+                                params={"tenant": tenant_id},
+                                timeout=300,
+                            )
+
+                            if process_response.status_code == 200:
+                                process_result = process_response.json()
+                                if process_result.get("success"):
+                                    st.write(f"解析完了: {process_result.get('pages_processed')}ページ処理")
+                                    status.update(label="処理完了", state="complete")
+                                    # 処理成功を記録
+                                    st.session_state.processed_files.add(file_key)
+                                else:
+                                    st.write(f"解析エラー: {process_result.get('error')}")
+                                    status.update(label="エラーあり", state="error")
+                            else:
+                                st.write("AI処理に失敗しました")
+                                status.update(label="処理失敗", state="error")
+
                         else:
-                            st.write(f"⚠️ 解析エラー: {process_result.get('error')}")
-                            status.update(label="エラーあり", state="error")
-                    else:
-                        st.write("❌ AI処理に失敗しました")
-                        status.update(label="処理失敗", state="error")
+                            error_detail = response.json().get("detail", "不明なエラー")
+                            st.write(f"アップロード失敗: {error_detail}")
+                            status.update(label="アップロード失敗", state="error")
 
-                else:
-                    error_detail = response.json().get("detail", "不明なエラー")
-                    st.write(f"❌ アップロード失敗: {error_detail}")
-                    status.update(label="アップロード失敗", state="error")
+                    except requests.exceptions.Timeout:
+                        st.write("タイムアウト")
+                        status.update(label="タイムアウト", state="error")
+                    except requests.exceptions.RequestException as e:
+                        st.write(f"通信エラー: {e}")
+                        status.update(label="通信エラー", state="error")
 
-            except requests.exceptions.Timeout:
-                st.write("❌ タイムアウト")
-                status.update(label="タイムアウト", state="error")
-            except requests.exceptions.RequestException as e:
-                st.write(f"❌ 通信エラー: {e}")
-                status.update(label="通信エラー", state="error")
+        # 既に処理済みのファイルの場合
+        else:
+            st.success(f"{uploaded_file.name} は処理済みです")
+            if st.button("再処理する"):
+                st.session_state.processed_files.discard(file_key)
+                st.rerun()
 
     # -------------------------------------------------------------------------
     # 構造化データ一覧
     # -------------------------------------------------------------------------
     st.divider()
-    st.header("📊 構造化データ一覧")
+    st.header("構造化データ一覧")
 
     try:
         response = requests.get(
@@ -130,7 +151,7 @@ def admin_page():
 
             if processed_files:
                 for f in processed_files:
-                    with st.expander(f"📄 {f['filename']}", expanded=False):
+                    with st.expander(f"{f['filename']}", expanded=False):
                         # 構造化データを取得して表示
                         try:
                             struct_response = requests.get(
@@ -167,7 +188,7 @@ def admin_page():
                                         if key_points:
                                             st.write("重要ポイント:")
                                             for point in key_points:
-                                                st.write(f"  • {point}")
+                                                st.write(f"  - {point}")
 
                                         st.divider()
 
@@ -178,7 +199,7 @@ def admin_page():
                                 # 削除ボタン
                                 st.divider()
                                 if st.button(
-                                    "🗑️ このファイルを削除",
+                                    "このファイルを削除",
                                     key=f"delete_{f['file_id']}",
                                     type="secondary"
                                 ):
@@ -189,7 +210,7 @@ def admin_page():
                                             timeout=10,
                                         )
                                         if delete_response.status_code == 200:
-                                            st.success(f"✅ {f['filename']} を削除しました")
+                                            st.success(f"{f['filename']} を削除しました")
                                             st.rerun()
                                         else:
                                             st.error("削除に失敗しました")
@@ -203,13 +224,13 @@ def admin_page():
                             st.error(f"通信エラー: {e}")
 
             else:
-                st.info("📭 まだ構造化されたデータはありません。PDFをアップロードしてください。")
+                st.info("まだ構造化されたデータはありません。PDFをアップロードしてください。")
 
         else:
-            st.error(f"❌ データ取得に失敗しました (status: {response.status_code})")
+            st.error(f"データ取得に失敗しました (status: {response.status_code})")
 
     except requests.exceptions.RequestException as e:
-        st.error(f"❌ API通信エラー: {e}")
+        st.error(f"API通信エラー: {e}")
 
 
 # =============================================================================
@@ -217,7 +238,7 @@ def admin_page():
 # =============================================================================
 def user_page():
     """ユーザー用ページ：構造化データに対してチャットで質問"""
-    st.title("💬 ドキュメントチャット")
+    st.title("ドキュメントチャット")
 
     # テナントID設定
     tenant_id = st.sidebar.text_input(
@@ -257,7 +278,7 @@ def user_page():
 
                         # 検索が行われたかどうかを表示
                         if result.get("search_performed"):
-                            st.caption("🔍 ドキュメント検索を実行しました")
+                            st.caption("ドキュメント検索を実行しました")
 
                         st.markdown(answer)
                     else:
