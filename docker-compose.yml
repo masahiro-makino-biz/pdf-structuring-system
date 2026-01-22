@@ -49,6 +49,13 @@ services:
       - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先
       - MCP_URL=http://mcp:8001  # MCPサーバーへの接続先（チャット検索用）
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # OpenAI APIキー（.envファイルから取得）
+      # ---------------------------------------------------------------------------
+      # Agent Framework設定（OpenAI/Azure切り替え用）
+      # ---------------------------------------------------------------------------
+      - AI_PROVIDER=${AI_PROVIDER:-openai}  # AIプロバイダー（openai / azure）
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}  # Azure OpenAI エンドポイント
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-}  # Azure OpenAI デプロイメント名
+      # ---------------------------------------------------------------------------
       - PYTHONIOENCODING=utf-8  # 日本語ファイル名対応
       - LANG=C.UTF-8
     depends_on:

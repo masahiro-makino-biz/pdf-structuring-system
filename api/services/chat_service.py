@@ -1,60 +1,54 @@
 # =============================================================================
-# api/services/chat_service.py - チャットサービス
+# api/services/chat_service.py - チャットサービス（Agent Framework版）
 # =============================================================================
-# ユーザーの質問を受けて、必要に応じてMCPで検索し、回答を生成する
+# Microsoft Agent Frameworkを使用してチャット機能を提供
+# OpenAI/Azure OpenAIを切り替え可能
 # =============================================================================
 
 import os
 import json
+from typing import Annotated
 import httpx
-from openai import OpenAI
+from pydantic import Field
+from agent_framework import ai_function
+from .agent_config import get_chat_client
 
 # =============================================================================
 # 設定
 # =============================================================================
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 MCP_URL = os.getenv("MCP_URL", "http://mcp:8001")
 
-
-# =============================================================================
-# OpenAI Function Calling用のツール定義
-# =============================================================================
-# 【Function Callingとは】
-# OpenAI APIに「こういうツールが使えるよ」と教えておくと、
-# AIが必要に応じてツールを呼び出すように指示してくる仕組み
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_documents",
-            "description": "PDFから抽出した構造化データを検索する。ユーザーが特定のトピックや情報について質問した時に使用する。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "検索キーワード（スペース区切りで複数指定可能）"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    }
-]
+# ---------------------------------------------------------------------------
+# テナント情報の保持
+# ---------------------------------------------------------------------------
+# 【なぜグローバル変数か】
+# @ai_function で定義したツール関数は、Agent Frameworkから呼び出されるため、
+# 引数を自由に追加できない。そのため、テナント情報は外部から設定する。
+#
+# 【改善の余地】
+# - ContextVar を使ってスレッドセーフにする方法もある
+# - 今回はシングルリクエストの処理なので、シンプルにグローバル変数を使用
+_current_tenant = "default"
 
 
 # =============================================================================
 # MCP検索呼び出し
 # =============================================================================
-async def call_mcp_search(query: str, tenant: str = "default") -> dict:
+async def call_mcp_search(query: str, tenant: str) -> dict:
     """
     MCP検索APIを呼び出す
 
     【なぜMCPを経由するか】
     - MCPはAIエージェント用のツール提供サーバー
     - 将来的にClaude等のAIから直接呼び出せるようになる
-    - 今はHTTP経由で呼び出し
+    - 検索ロジックを一箇所に集約できる
+
+    Args:
+        query: 検索キーワード
+        tenant: テナントID
+
+    Returns:
+        検索結果を含む辞書
     """
     async with httpx.AsyncClient() as client:
         try:
@@ -69,16 +63,82 @@ async def call_mcp_search(query: str, tenant: str = "default") -> dict:
 
 
 # =============================================================================
+# ツール定義（Agent Framework方式）
+# =============================================================================
+# 【@ai_functionデコレータとは】
+# 関数をAIが呼び出せる「ツール」として登録するデコレータ
+# 従来のTOOLS辞書での定義が不要になり、コードがシンプルになる
+#
+# 【メリット】
+# - 関数の型ヒントから自動的にスキーマを生成
+# - docstringがツールの説明として使われる
+# - Pydantic Fieldで詳細な引数の説明を追加できる
+
+@ai_function
+async def search_documents(
+    query: Annotated[str, Field(description="検索キーワード（スペース区切りで複数指定可能）")]
+) -> str:
+    """
+    PDFから抽出した構造化データを検索する。
+    ユーザーが特定のトピックや情報について質問した時に使用する。
+    """
+    # グローバル変数からテナント情報を取得
+    result = await call_mcp_search(query, _current_tenant)
+    # Agent Frameworkは文字列を期待するのでJSONに変換
+    return json.dumps(result, ensure_ascii=False)
+
+
+# =============================================================================
+# エージェント作成
+# =============================================================================
+def create_agent():
+    """
+    DocumentAssistantエージェントを作成
+
+    【エージェントとは】
+    - AIモデル + システムプロンプト + ツール をパッケージ化したもの
+    - 「このAIはこういう役割で、こういうツールが使える」を定義
+
+    【なぜエージェントパターンか】
+    - 設定を一箇所にまとめられる
+    - 再利用しやすい
+    - テストしやすい
+
+    Returns:
+        設定済みのエージェント
+    """
+    # プロバイダーに応じたクライアントを取得
+    client = get_chat_client()
+
+    # エージェントを作成
+    return client.as_agent(
+        name="DocumentAssistant",
+        instructions="""あなたはPDFドキュメントに関する質問に答えるアシスタントです。
+
+ユーザーがドキュメントの内容について質問した場合は、search_documents関数を使って関連情報を検索してください。
+検索結果に基づいて、わかりやすく回答してください。
+
+検索結果がない場合や、一般的な質問の場合は、そのまま回答してください。""",
+        tools=[search_documents]
+    )
+
+
+# =============================================================================
 # チャット処理
 # =============================================================================
 async def process_chat(message: str, tenant: str = "default") -> dict:
     """
     ユーザーメッセージを処理して回答を生成
 
-    【処理フロー】
-    1. OpenAI GPT-4oにメッセージを送信（ツール定義付き）
-    2. AIが検索を必要と判断したら、MCP検索を実行
-    3. 検索結果をAIに渡して最終回答を生成
+    【処理フロー（Agent Framework版）】
+    1. テナント情報をグローバル変数に設定
+    2. エージェントを作成
+    3. agent.run()でメッセージを処理（ツール呼び出しも自動処理）
+    4. 結果を返す
+
+    【従来との違い】
+    - 従来: 2回のAPI呼び出し（ツール判断 → 結果取得）を自分で制御
+    - Agent Framework: agent.run()が全部やってくれる
 
     Args:
         message: ユーザーのメッセージ
@@ -87,82 +147,80 @@ async def process_chat(message: str, tenant: str = "default") -> dict:
     Returns:
         回答と検索情報を含む辞書
     """
-    if not OPENAI_API_KEY:
-        return {
-            "success": False,
-            "response": "OpenAI APIキーが設定されていません。",
-            "search_performed": False
-        }
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
-
-    # システムプロンプト
-    system_prompt = """あなたはPDFドキュメントに関する質問に答えるアシスタントです。
-
-ユーザーがドキュメントの内容について質問した場合は、search_documents関数を使って関連情報を検索してください。
-検索結果に基づいて、わかりやすく回答してください。
-
-検索結果がない場合や、一般的な質問の場合は、そのまま回答してください。"""
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": message}
-    ]
+    global _current_tenant
+    _current_tenant = tenant
 
     try:
-        # 1回目: AIに質問を送信（ツール呼び出しの判断）
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto"  # AIが自動判断
-        )
+        # エージェントを作成
+        agent = create_agent()
 
-        assistant_message = response.choices[0].message
-        search_performed = False
-        search_results = None
-
-        # ツール呼び出しがあるかチェック
-        if assistant_message.tool_calls:
-            for tool_call in assistant_message.tool_calls:
-                if tool_call.function.name == "search_documents":
-                    # 検索を実行
-                    args = json.loads(tool_call.function.arguments)
-                    search_results = await call_mcp_search(
-                        query=args.get("query", message),
-                        tenant=tenant
-                    )
-                    search_performed = True
-
-                    # メッセージ履歴にツール呼び出しと結果を追加
-                    messages.append(assistant_message)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(search_results, ensure_ascii=False)
-                    })
-
-            # 2回目: 検索結果を元に最終回答を生成
-            final_response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages
-            )
-            answer = final_response.choices[0].message.content
-
-        else:
-            # ツール呼び出しなし = 直接回答
-            answer = assistant_message.content
+        # メッセージを処理（ツール呼び出しも自動で行われる）
+        result = await agent.run(message)
 
         return {
             "success": True,
-            "response": answer,
-            "search_performed": search_performed,
-            "search_results": search_results
+            "response": result.text,
+            "search_performed": True  # Agent Frameworkでは検索有無の詳細追跡は難しい
         }
 
+    except ValueError as e:
+        # APIキー未設定などの設定エラー
+        return {
+            "success": False,
+            "response": f"設定エラー: {str(e)}",
+            "search_performed": False
+        }
+    except NotImplementedError as e:
+        # Azure未設定エラー
+        return {
+            "success": False,
+            "response": f"未実装: {str(e)}",
+            "search_performed": False
+        }
     except Exception as e:
         return {
             "success": False,
             "response": f"エラーが発生しました: {str(e)}",
             "search_performed": False
         }
+
+
+# =============================================================================
+# 【解説】Agent Frameworkへの移行で何が変わったか
+# =============================================================================
+#
+# 【変更前（OpenAI直接呼び出し）】
+# ```python
+# TOOLS = [{"type": "function", "function": {...}}]  # 辞書でツール定義
+# response = client.chat.completions.create(...)     # 1回目のAPI呼び出し
+# if assistant_message.tool_calls:                    # ツール呼び出しの判定
+#     search_results = await call_mcp_search(...)     # 検索実行
+#     messages.append(...)                            # メッセージ追加
+#     final_response = client.chat.completions.create(...)  # 2回目のAPI呼び出し
+# ```
+#
+# 【変更後（Agent Framework）】
+# ```python
+# @ai_function                                        # デコレータでツール定義
+# async def search_documents(...):
+#     ...
+#
+# agent = client.as_agent(tools=[search_documents])  # エージェント作成
+# result = await agent.run(message)                   # 全部自動で処理
+# ```
+#
+# 【メリット】
+# 1. コード量削減: ツール定義が約1/3に
+# 2. 可読性向上: 何をしているか分かりやすい
+# 3. プロバイダー切り替え: OpenAI/Azure を設定だけで切り替え可能
+# 4. 拡張しやすい: ツール追加がデコレータ付与だけでOK
+#
+# 【デメリット】
+# 1. 内部動作の把握が難しい（抽象化されている）
+# 2. 検索有無などの詳細追跡が難しくなる
+# 3. フレームワークのバージョンアップでAPIが変わる可能性
+#
+# 【注意点】
+# - agent-frameworkはプレリリース版なのでAPIが変わる可能性がある
+# - 本番環境では安定版を待つことを推奨
+# - 問題が起きたら元の実装に戻せるよう、git履歴を残しておく
