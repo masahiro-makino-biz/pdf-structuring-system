@@ -5,7 +5,6 @@
 # OpenAI/Azure OpenAIを切り替え可能
 # =============================================================================
 
-import os
 import json
 from typing import Annotated
 import httpx
@@ -14,9 +13,14 @@ from agent_framework import ai_function
 from .agent_config import get_chat_client
 
 # =============================================================================
-# 設定
+# 設定とロギング
 # =============================================================================
-MCP_URL = os.getenv("MCP_URL", "http://mcp:8001")
+from core.config import get_settings
+from core.logging import get_logger
+
+logger = get_logger(__name__)
+settings = get_settings()
+MCP_URL = settings.mcp_url
 
 # ---------------------------------------------------------------------------
 # テナント情報と検索結果の保持

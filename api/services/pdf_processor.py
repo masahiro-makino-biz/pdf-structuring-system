@@ -4,7 +4,6 @@
 # PDF→画像変換、GPT-4o解析、MongoDB保存を行う内部サービス
 # =============================================================================
 
-import os
 import base64
 import json
 from io import BytesIO
@@ -16,10 +15,15 @@ from PIL import Image
 from openai import OpenAI
 
 # =============================================================================
-# 設定
+# 設定とロギング
 # =============================================================================
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-DATA_DIR = Path("/data")
+from core.config import get_settings
+from core.logging import get_logger
+
+logger = get_logger(__name__)
+settings = get_settings()
+OPENAI_API_KEY = settings.openai_api_key
+DATA_DIR = Path(settings.data_dir)
 
 
 # =============================================================================
@@ -160,7 +164,7 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
     pages_data = []
     for i, image_path in enumerate(image_paths):
         page_num = i + 1
-        print(f"Processing page {page_num}/{total_pages}...", flush=True)
+        logger.info(f"ページ処理中: {page_num}/{total_pages}")
 
         extraction_result = extract_page_data(image_path, page_num)
 

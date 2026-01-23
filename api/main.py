@@ -6,7 +6,6 @@
 # ここでAPIのエンドポイント（URL）を定義する
 # =============================================================================
 
-import os
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -18,13 +17,22 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
 # =============================================================================
-# 設定
+# 設定とロギング
 # =============================================================================
-# 【環境変数から設定を読み込む】
-# os.getenv("変数名", "デフォルト値") で環境変数を取得
-# docker-compose.yml の environment で設定した値が入る
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-DATA_DIR = Path("/data")  # ファイル保存先（docker-compose.ymlでマウント）
+# 【一元管理された設定を使用】
+# core/config.py で全ての環境変数を一元管理
+# core/logging.py でログ出力を統一
+from core.config import get_settings
+from core.logging import setup_logging, get_logger
+
+# ロギング初期化（アプリ起動時に1回だけ）
+setup_logging()
+logger = get_logger(__name__)
+
+# 設定を取得
+settings = get_settings()
+MONGO_URL = settings.mongo_url
+DATA_DIR = Path(settings.data_dir)
 
 # =============================================================================
 # FastAPIアプリケーションの作成
@@ -85,9 +93,9 @@ async def startup_db_client():
     # サーバー情報を取得して接続確認
     try:
         await mongo_client.server_info()
-        print(f"✅ MongoDB connected: {MONGO_URL}")
+        logger.info(f"MongoDB接続成功: {MONGO_URL}")
     except Exception as e:
-        print(f"❌ MongoDB connection failed: {e}")
+        logger.error(f"MongoDB接続失敗: {e}")
 
 
 @app.on_event("shutdown")
@@ -98,7 +106,7 @@ async def shutdown_db_client():
     global mongo_client
     if mongo_client:
         mongo_client.close()
-        print("MongoDB connection closed")
+        logger.info("MongoDB接続クローズ")
 
 
 # =============================================================================
@@ -513,7 +521,7 @@ async def delete_file(
             shutil.rmtree(images_dir)
     except Exception as e:
         # ファイル削除に失敗してもDB削除は続行
-        print(f"ファイル削除エラー: {e}")
+        logger.warning(f"ファイル削除エラー: {e}")
 
     # MongoDBから削除
     await db.files.delete_one({"file_id": file_id, "tenant": tenant})

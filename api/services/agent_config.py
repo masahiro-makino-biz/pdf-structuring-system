@@ -5,18 +5,23 @@
 # 環境変数AI_PROVIDERで切り替え可能
 # =============================================================================
 
-import os
 from agent_framework.openai import OpenAIChatClient
 # from agent_framework.azure import AzureOpenAIChatClient  # Azure使用時にコメント解除
 # from azure.identity import DefaultAzureCredential  # Azure使用時にコメント解除
 
 # =============================================================================
-# 設定値
+# 設定とロギング
 # =============================================================================
+from core.config import get_settings
+from core.logging import get_logger
+
+logger = get_logger(__name__)
+settings = get_settings()
+
 # 【AI_PROVIDER】使用するAIプロバイダーを指定
 #   - "openai": OpenAI API（デフォルト）
 #   - "azure": Azure OpenAI Service
-PROVIDER = os.getenv("AI_PROVIDER", "openai")
+PROVIDER = settings.ai_provider
 
 # 【各プロバイダーの違い】
 # OpenAI:
@@ -82,15 +87,16 @@ def get_chat_client():
         # ---------------------------------------------------------------------------
         # OpenAI設定（デフォルト）
         # ---------------------------------------------------------------------------
-        api_key = os.getenv("OPENAI_API_KEY")
-        # 使用するモデルID（環境変数で上書き可能）
-        model_id = os.getenv("OPENAI_CHAT_MODEL_ID", "gpt-5.2")
+        api_key = settings.openai_api_key
+        # 使用するモデルID
+        model_id = settings.openai_chat_model_id
 
         if not api_key:
             raise ValueError(
                 "OpenAIを使用するには OPENAI_API_KEY を設定してください"
             )
 
+        logger.info(f"OpenAIクライアント作成: model={model_id}")
         return OpenAIChatClient(api_key=api_key, model_id=model_id)
 
 
