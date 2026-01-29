@@ -1,74 +1,59 @@
 # =============================================================================
-# mcp/server.py - FastMCP ツールサーバー
+# mcp/server.py - 検索サーバー
 # =============================================================================
-# 【このファイルの役割】
-# AIエージェントが使用するツールを提供するMCPサーバー
 #
-# 【MCPとは】
-# Model Context Protocol の略
-# AIモデル（Claude等）に「ツール」を提供するための標準規格
+# 【ファイル概要】
+# 点検記録の検索APIを提供するサーバー。
+# chat_service.py からHTTP経由で呼び出される。
 #
-# 【参考】https://github.com/jlowin/fastmcp
+# 【処理フロー】
+# 1. chat_service.py が POST /api/search にリクエスト
+# 2. _search_documents_async() でMongoDBを検索
+# 3. 検索条件に部分一致するレコードを返す
+#
+# 【依存関係】
+# - MongoDB : structured_data コレクションを検索
+# - FastAPI : HTTPエンドポイント提供
+# - FastMCP : 将来的にClaudeから直接呼び出す用（現在は未使用）
+#
 # =============================================================================
 
 import os
-import re
 from fastmcp import FastMCP
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# =============================================================================
-# 設定
-# =============================================================================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 
-# =============================================================================
-# MCPサーバーの作成
-# =============================================================================
 mcp = FastMCP("pdf-tools")
 
-# =============================================================================
-# MongoDB接続
-# =============================================================================
 mongo_client: AsyncIOMotorClient = None
 db = None
 
 
 def init_mongo():
-    """MongoDB接続を初期化"""
+    """
+    MongoDB接続を初期化
+
+    【なぜこの実装か】
+    - 遅延初期化: 最初のリクエスト時に接続を確立
+    - グローバル変数で接続を保持し、再利用
+    """
     global mongo_client, db
     if mongo_client is None:
         mongo_client = AsyncIOMotorClient(MONGO_URL)
         db = mongo_client.pdf_system
 
 
-# =============================================================================
-# MCPツール（基本）
-# =============================================================================
-
-
 @mcp.tool()
 def hello(name: str = "World") -> str:
-    """
-    動作確認用のシンプルなツール
-
-    Args:
-        name: 挨拶する相手の名前
-
-    Returns:
-        挨拶メッセージ
-    """
+    """動作確認用のシンプルなツール"""
     return f"Hello, {name}! MCP server is working."
 
 
 @mcp.tool()
 def get_server_status() -> dict:
-    """
-    サーバーの状態を返す
-
-    Returns:
-        サーバーの状態情報
-    """
+    """サーバーの状態を返す"""
     return {
         "status": "running",
         "phase": 4,
@@ -81,31 +66,54 @@ def get_server_status() -> dict:
     }
 
 
-# =============================================================================
-# 検索ツール
-# =============================================================================
-
-
 async def _search_documents_async(
-    query: str,
+    equipment: str = "",
+    equipment_part: str = "",
+    inspection_item: str = "",
+    inspection_date: str = "",
     tenant: str = "default",
     limit: int = 5
 ) -> dict:
     """
     MongoDBから構造化データを検索する内部関数
 
-    【検索ロジック】
-    1. クエリをキーワードに分割
-    2. 各ページのtitle, summary, key_pointsを検索
-    3. マッチしたページを含むドキュメントを返す
+    【処理フロー】
+    1. 検索条件をリストに格納（空でないもののみ）
+    2. MongoDBから全件取得
+    3. 3重ループ（ファイル→ページ→レコード）でマッチング
+    4. 部分一致でマッチしたレコードを収集
+    5. マッチ数が多い順にソートして返す
+
+    【なぜこの実装か】
+    - 全件取得→Pythonフィルタ方式はシンプルで理解しやすい
+    - データ量が増えたらMongoDBの$regexクエリに移行を検討
+
+    Args:
+        equipment: 機器名
+        equipment_part: 機器部品名
+        inspection_item: 点検項目
+        inspection_date: 点検年月日
+        tenant: テナントID
+        limit: 返す結果の最大数
+
+    Returns:
+        {"success": bool, "results": [...], "total_documents": int}
     """
     init_mongo()
 
-    # クエリをキーワードに分割（日本語対応）
-    keywords = [k.strip() for k in re.split(r'[\s　]+', query) if k.strip()]
+    # 検索条件をリストに格納（空でないもののみ）
+    search_conditions = []
+    if equipment.strip():
+        search_conditions.append(("機器", equipment.strip()))
+    if equipment_part.strip():
+        search_conditions.append(("機器部品", equipment_part.strip()))
+    if inspection_item.strip():
+        search_conditions.append(("点検項目", inspection_item.strip()))
+    if inspection_date.strip():
+        search_conditions.append(("点検年月日", inspection_date.strip()))
 
-    if not keywords:
-        return {"success": False, "error": "検索キーワードが空です", "results": []}
+    if not search_conditions:
+        return {"success": False, "error": "検索条件を1つ以上指定してください", "results": []}
 
     # 構造化データを取得
     cursor = db.structured_data.find({"tenant": tenant})
@@ -121,35 +129,51 @@ async def _search_documents_async(
                 continue
 
             page_data = page.get("data", {})
-            title = page_data.get("title") or ""
-            summary = page_data.get("summary") or ""
-            key_points = page_data.get("key_points") or []
+            records = page_data.get("records") or []
 
-            # 検索対象テキストを結合
-            searchable_text = f"{title} {summary} {' '.join(key_points)}".lower()
+            # 各レコードをチェック
+            matched_records = []
+            for record in records:
+                match_count = 0
+                matched_fields = []
 
-            # キーワードがマッチするかチェック
-            match_count = sum(1 for kw in keywords if kw.lower() in searchable_text)
+                for field_name, search_value in search_conditions:
+                    search_lower = search_value.lower()
+                    stored_value = (record.get(field_name) or "").lower()
 
-            if match_count > 0:
+                    if search_lower in stored_value:
+                        match_count += 1
+                        matched_fields.append(field_name)
+
+                if match_count > 0:
+                    matched_records.append({
+                        "機器": record.get("機器"),
+                        "機器部品": record.get("機器部品"),
+                        "計測箇所": record.get("計測箇所"),
+                        "点検項目": record.get("点検項目"),
+                        "点検年月日": record.get("点検年月日"),
+                        "測定者": record.get("測定者"),
+                        "計測器具": record.get("計測器具"),
+                        "単位": record.get("単位"),
+                        "測定値": record.get("測定値"),
+                        "基準値": record.get("基準値"),
+                        "matched_fields": matched_fields,
+                        "match_score": match_count / len(search_conditions)
+                    })
+
+            if matched_records:
                 matched_pages.append({
                     "page_number": page.get("page_number"),
-                    "title": title,
-                    "summary": summary,
-                    "key_points": key_points,
-                    "match_score": match_count / len(keywords),
-                    "image_path": page.get("image_path", "")  # 元画像のパス
+                    "image_path": page.get("image_path", ""),
+                    "matched_records": matched_records
                 })
 
         if matched_pages:
-            # マッチスコアでソート
-            matched_pages.sort(key=lambda x: x["match_score"], reverse=True)
-
             results.append({
                 "file_id": doc.get("file_id"),
                 "filename": doc.get("filename"),
-                "matched_pages": matched_pages[:3],  # 上位3ページ
-                "total_matches": len(matched_pages)
+                "matched_pages": matched_pages[:3],
+                "total_matches": sum(len(p["matched_records"]) for p in matched_pages)
             })
 
     # 結果をマッチ数でソート
@@ -157,41 +181,49 @@ async def _search_documents_async(
 
     return {
         "success": True,
-        "query": query,
-        "keywords": keywords,
+        "search_conditions": {
+            "equipment": equipment,
+            "equipment_part": equipment_part,
+            "inspection_item": inspection_item,
+            "inspection_date": inspection_date
+        },
         "total_documents": len(results),
         "results": results[:limit]
     }
 
 
 @mcp.tool()
-def search_documents(query: str, tenant: str = "default", limit: int = 5) -> dict:
+def search_documents(
+    equipment: str = "",
+    equipment_part: str = "",
+    inspection_item: str = "",
+    inspection_date: str = "",
+    tenant: str = "default",
+    limit: int = 5
+) -> dict:
     """
-    構造化データからキーワード検索
+    ミル機器の点検記録を検索（MCPツール版）
 
-    PDFから抽出した構造化データ（タイトル、要約、重要ポイント）を検索し、
-    関連するページを返します。
-
-    Args:
-        query: 検索クエリ（スペース区切りでAND検索）
-        tenant: テナントID
-        limit: 返す結果の最大数
-
-    Returns:
-        検索結果（マッチしたドキュメントとページ）
+    【なぜこの実装か】
+    - @mcp.tool() は将来Claudeから直接呼び出す用
+    - 現在は未使用（HTTP API経由で呼び出し）
     """
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(_search_documents_async(query, tenant, limit))
+        return loop.run_until_complete(_search_documents_async(
+            equipment=equipment,
+            equipment_part=equipment_part,
+            inspection_item=inspection_item,
+            inspection_date=inspection_date,
+            tenant=tenant,
+            limit=limit
+        ))
     finally:
         loop.close()
 
 
-# =============================================================================
-# HTTPエンドポイント（API連携用）
-# =============================================================================
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -200,7 +232,10 @@ app = FastAPI()
 
 class SearchRequest(BaseModel):
     """検索リクエスト"""
-    query: str
+    equipment: str = ""
+    equipment_part: str = ""
+    inspection_item: str = ""
+    inspection_date: str = ""
     tenant: str = "default"
     limit: int = 5
 
@@ -208,10 +243,7 @@ class SearchRequest(BaseModel):
 @app.get("/api/health")
 async def api_health():
     """ヘルスチェック"""
-    return {
-        "status": "ok",
-        "openai_configured": bool(OPENAI_API_KEY)
-    }
+    return {"status": "ok", "openai_configured": bool(OPENAI_API_KEY)}
 
 
 @app.post("/api/search")
@@ -219,25 +251,26 @@ async def api_search(request: SearchRequest):
     """
     検索APIエンドポイント
 
-    APIサーバーからMCPの検索ツールを呼び出すためのエンドポイント
+    【処理フロー】
+    1. chat_service.py からHTTPリクエストを受信
+    2. _search_documents_async() で検索実行
+    3. 結果をJSONで返す
+
+    【なぜこの実装か】
+    - HTTP経由にすることで、サービス間の疎結合を維持
+    - 将来的に検索サーバーを別マシンに分離することも可能
     """
     result = await _search_documents_async(
-        query=request.query,
+        equipment=request.equipment,
+        equipment_part=request.equipment_part,
+        inspection_item=request.inspection_item,
+        inspection_date=request.inspection_date,
         tenant=request.tenant,
         limit=request.limit
     )
     return result
 
 
-# =============================================================================
-# サーバー起動
-# =============================================================================
 if __name__ == "__main__":
     import uvicorn
-
-    if OPENAI_API_KEY:
-        print("✅ OpenAI API Key configured")
-    else:
-        print("⚠️ OpenAI API Key not set. Set OPENAI_API_KEY in .env file.")
-
     uvicorn.run(app, host="0.0.0.0", port=8001)

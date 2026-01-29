@@ -1,8 +1,23 @@
 # =============================================================================
-# api/services/chat_service.py - チャットサービス（Agent Framework版）
+# api/services/chat_service.py - チャットサービス
 # =============================================================================
-# Microsoft Agent Frameworkを使用してチャット機能を提供
-# OpenAI/Azure OpenAIを切り替え可能
+#
+# 【ファイル概要】
+# ユーザーのチャットメッセージを処理し、AIエージェントを使って回答を生成する。
+# Microsoft Agent Framework を使用し、OpenAI/Azure OpenAI を切り替え可能。
+#
+# 【処理フロー】
+# 1. main.py の /chat から process_chat() が呼ばれる
+# 2. create_agent() でAIエージェントを作成
+# 3. agent.run(message) でメッセージを処理
+# 4. AIが必要と判断したら @ai_function の search_documents() を呼び出す
+# 5. mcp/server.py の検索APIを呼び出し、結果を取得
+# 6. AIが検索結果を元に回答を生成
+#
+# 【依存関係】
+# - agent_config.py : AIクライアント設定
+# - mcp/server.py   : 検索API（HTTP経由で呼び出し）
+#
 # =============================================================================
 
 import json
@@ -12,9 +27,6 @@ from pydantic import Field
 from agent_framework import ai_function
 from .agent_config import get_chat_client
 
-# =============================================================================
-# 設定とロギング
-# =============================================================================
 from core.config import get_settings
 from core.logging import get_logger
 
@@ -22,44 +34,49 @@ logger = get_logger(__name__)
 settings = get_settings()
 MCP_URL = settings.mcp_url
 
-# ---------------------------------------------------------------------------
-# テナント情報と検索結果の保持
-# ---------------------------------------------------------------------------
-# 【なぜグローバル変数か】
-# @ai_function で定義したツール関数は、Agent Frameworkから呼び出されるため、
-# 引数を自由に追加できない。そのため、テナント情報は外部から設定する。
-#
-# 【改善の余地】
-# - ContextVar を使ってスレッドセーフにする方法もある
-# - 今回はシングルリクエストの処理なので、シンプルにグローバル変数を使用
 _current_tenant = "default"
-_last_search_results = None  # 検索結果を保持（UIで画像表示に使用）
-
-
-# =============================================================================
-# MCP検索呼び出し
-# =============================================================================
-async def call_mcp_search(query: str, tenant: str) -> dict:
+_last_search_results = None
+async def call_mcp_search(
+    tenant: str,
+    equipment: str = "",
+    equipment_part: str = "",
+    inspection_item: str = "",
+    inspection_date: str = ""
+) -> dict:
     """
     MCP検索APIを呼び出す
 
-    【なぜMCPを経由するか】
-    - MCPはAIエージェント用のツール提供サーバー
-    - 将来的にClaude等のAIから直接呼び出せるようになる
-    - 検索ロジックを一箇所に集約できる
+    【処理フロー】
+    1. 検索条件をJSON形式で構築
+    2. httpx で mcp/server.py の /api/search にPOSTリクエスト
+    3. 検索結果をdictで返す
+
+    【なぜこの実装か】
+    - MCPサーバーに検索ロジックを集約することで、将来Claude等から直接呼び出し可能
+    - HTTP経由にすることで、サービス間の疎結合を維持
 
     Args:
-        query: 検索キーワード
         tenant: テナントID
+        equipment: 機器名
+        equipment_part: 機器部品名
+        inspection_item: 点検項目
+        inspection_date: 点検年月日
 
     Returns:
-        検索結果を含む辞書
+        検索結果を含む辞書 {"success": bool, "results": [...]}
     """
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
                 f"{MCP_URL}/api/search",
-                json={"query": query, "tenant": tenant, "limit": 5},
+                json={
+                    "equipment": equipment,
+                    "equipment_part": equipment_part,
+                    "inspection_item": inspection_item,
+                    "inspection_date": inspection_date,
+                    "tenant": tenant,
+                    "limit": 5
+                },
                 timeout=30.0
             )
             return response.json()
@@ -67,50 +84,61 @@ async def call_mcp_search(query: str, tenant: str) -> dict:
             return {"success": False, "error": str(e), "results": []}
 
 
-# =============================================================================
-# ツール定義（Agent Framework方式）
-# =============================================================================
-# 【@ai_functionデコレータとは】
-# 関数をAIが呼び出せる「ツール」として登録するデコレータ
-# 従来のTOOLS辞書での定義が不要になり、コードがシンプルになる
-#
-# 【メリット】
-# - 関数の型ヒントから自動的にスキーマを生成
-# - docstringがツールの説明として使われる
-# - Pydantic Fieldで詳細な引数の説明を追加できる
-
 @ai_function
 async def search_documents(
-    query: Annotated[str, Field(description="検索キーワード（スペース区切りで複数指定可能）")]
+    equipment: Annotated[str, Field(description="機器名（例: '2号機微粉炭機D'）", default="")] = "",
+    equipment_part: Annotated[str, Field(description="機器部品名（例: 'リンクサポート'）", default="")] = "",
+    inspection_item: Annotated[str, Field(description="点検項目（例: '隙間計測'）", default="")] = "",
+    inspection_date: Annotated[str, Field(description="点検年月日（例: '2024-01-15', '2024'）", default="")] = ""
 ) -> str:
     """
-    PDFから抽出した構造化データを検索する。
-    ユーザーが特定のトピックや情報について質問した時に使用する。
+    ミル機器の点検記録を検索する（AIが呼び出すツール）
+
+    【処理フロー】
+    1. AIがユーザーの質問から検索条件を抽出してこの関数を呼ぶ
+    2. call_mcp_search() でMCPサーバーに検索リクエスト
+    3. 結果をJSONで返し、AIが回答を生成
+
+    【なぜこの実装か】
+    - @ai_function デコレータにより、AIが自動的にこの関数を呼び出せる
+    - 引数の description はAIへの説明（どんな値を入れるべきか）
+
+    Args:
+        equipment: 機器名
+        equipment_part: 機器部品名
+        inspection_item: 点検項目
+        inspection_date: 点検年月日
+
+    Returns:
+        検索結果のJSON文字列
     """
     global _last_search_results
     # グローバル変数からテナント情報を取得
-    result = await call_mcp_search(query, _current_tenant)
+    result = await call_mcp_search(
+        tenant=_current_tenant,
+        equipment=equipment,
+        equipment_part=equipment_part,
+        inspection_item=inspection_item,
+        inspection_date=inspection_date
+    )
     # 検索結果を保持（UIで画像表示に使用）
     _last_search_results = result
     # Agent Frameworkは文字列を期待するのでJSONに変換
     return json.dumps(result, ensure_ascii=False)
 
 
-# =============================================================================
-# エージェント作成
-# =============================================================================
 def create_agent():
     """
     DocumentAssistantエージェントを作成
 
-    【エージェントとは】
-    - AIモデル + システムプロンプト + ツール をパッケージ化したもの
-    - 「このAIはこういう役割で、こういうツールが使える」を定義
+    【処理フロー】
+    1. get_chat_client() でAIクライアントを取得
+    2. client.as_agent() でエージェントを作成
+    3. instructions（システムプロンプト）とtools（使えるツール）を設定
 
-    【なぜエージェントパターンか】
-    - 設定を一箇所にまとめられる
-    - 再利用しやすい
-    - テストしやすい
+    【なぜこの実装か】
+    - エージェントパターンにより、AIモデル+プロンプト+ツールを一箇所で管理
+    - agent.run() だけで、ツール呼び出しも含めた処理が自動で行われる
 
     Returns:
         設定済みのエージェント
@@ -121,39 +149,43 @@ def create_agent():
     # エージェントを作成
     return client.as_agent(
         name="DocumentAssistant",
-        instructions="""あなたはPDFドキュメントに関する質問に答えるアシスタントです。
+        instructions="""あなたはミル機器の点検記録PDFに関する質問に答えるアシスタントです。
 
-ユーザーがドキュメントの内容について質問した場合は、search_documents関数を使って関連情報を検索してください。
-検索結果に基づいて、わかりやすく回答してください。
+ユーザーが点検記録について質問した場合は、search_documents関数を使って検索してください。
+検索には以下の4つの条件が使えます（1つ以上指定が必要）:
+- equipment: 機器名（例: "2号機微粉炭機D"）
+- equipment_part: 機器部品名（例: "リンクサポート"）
+- inspection_item: 点検項目（例: "隙間計測"）
+- inspection_date: 点検年月日（例: "2024-01-15", "2024"）
+
+ユーザーの質問から適切な条件を抽出して検索してください。
+検索結果には測定値と基準値が含まれているので、それを参照して回答してください。
 
 検索結果がない場合や、一般的な質問の場合は、そのまま回答してください。""",
         tools=[search_documents]
     )
 
 
-# =============================================================================
-# チャット処理
-# =============================================================================
 async def process_chat(message: str, tenant: str = "default") -> dict:
     """
     ユーザーメッセージを処理して回答を生成
 
-    【処理フロー（Agent Framework版）】
+    【処理フロー】
     1. テナント情報をグローバル変数に設定
-    2. エージェントを作成
-    3. agent.run()でメッセージを処理（ツール呼び出しも自動処理）
+    2. create_agent() でエージェントを作成
+    3. agent.run(message) でメッセージを処理（ツール呼び出しも自動）
     4. 結果を返す（検索結果も含む）
 
-    【従来との違い】
-    - 従来: 2回のAPI呼び出し（ツール判断 → 結果取得）を自分で制御
-    - Agent Framework: agent.run()が全部やってくれる
+    【なぜこの実装か】
+    - Agent Framework の agent.run() がツール呼び出しを自動処理
+    - 従来の「2回のAPI呼び出しを自分で制御」が不要になりシンプル
 
     Args:
         message: ユーザーのメッセージ
         tenant: テナントID
 
     Returns:
-        回答と検索情報を含む辞書
+        {"success": bool, "response": str, "search_results": dict}
     """
     global _current_tenant, _last_search_results
     _current_tenant = tenant
@@ -195,42 +227,3 @@ async def process_chat(message: str, tenant: str = "default") -> dict:
         }
 
 
-# =============================================================================
-# 【解説】Agent Frameworkへの移行で何が変わったか
-# =============================================================================
-#
-# 【変更前（OpenAI直接呼び出し）】
-# ```python
-# TOOLS = [{"type": "function", "function": {...}}]  # 辞書でツール定義
-# response = client.chat.completions.create(...)     # 1回目のAPI呼び出し
-# if assistant_message.tool_calls:                    # ツール呼び出しの判定
-#     search_results = await call_mcp_search(...)     # 検索実行
-#     messages.append(...)                            # メッセージ追加
-#     final_response = client.chat.completions.create(...)  # 2回目のAPI呼び出し
-# ```
-#
-# 【変更後（Agent Framework）】
-# ```python
-# @ai_function                                        # デコレータでツール定義
-# async def search_documents(...):
-#     ...
-#
-# agent = client.as_agent(tools=[search_documents])  # エージェント作成
-# result = await agent.run(message)                   # 全部自動で処理
-# ```
-#
-# 【メリット】
-# 1. コード量削減: ツール定義が約1/3に
-# 2. 可読性向上: 何をしているか分かりやすい
-# 3. プロバイダー切り替え: OpenAI/Azure を設定だけで切り替え可能
-# 4. 拡張しやすい: ツール追加がデコレータ付与だけでOK
-#
-# 【デメリット】
-# 1. 内部動作の把握が難しい（抽象化されている）
-# 2. 検索有無などの詳細追跡が難しくなる
-# 3. フレームワークのバージョンアップでAPIが変わる可能性
-#
-# 【注意点】
-# - agent-frameworkはプレリリース版なのでAPIが変わる可能性がある
-# - 本番環境では安定版を待つことを推奨
-# - 問題が起きたら元の実装に戻せるよう、git履歴を残しておく

@@ -1,49 +1,44 @@
 # =============================================================================
 # api/services/agent_config.py - AIプロバイダー設定
 # =============================================================================
-# OpenAI/Azure OpenAIを切り替えるための設定ファイル
-# 環境変数AI_PROVIDERで切り替え可能
+#
+# 【ファイル概要】
+# AIクライアント（OpenAI/Azure OpenAI）を生成するファクトリー。
+# 環境変数 AI_PROVIDER でプロバイダーを切り替え可能。
+#
+# 【処理フロー】
+# 1. chat_service.py が get_chat_client() を呼び出す
+# 2. AI_PROVIDER の値に応じて OpenAI or Azure のクライアントを返す
+#
+# 【なぜこのファイルを分離したか】
+# - プロバイダー切り替え時にこのファイルだけ変更すればOK
+# - chat_service.py はプロバイダーの詳細を知らなくていい
+#
 # =============================================================================
 
 from agent_framework.openai import OpenAIChatClient
-# from agent_framework.azure import AzureOpenAIChatClient  # Azure使用時にコメント解除
-# from azure.identity import DefaultAzureCredential  # Azure使用時にコメント解除
 
-# =============================================================================
-# 設定とロギング
-# =============================================================================
 from core.config import get_settings
 from core.logging import get_logger
 
 logger = get_logger(__name__)
 settings = get_settings()
 
-# 【AI_PROVIDER】使用するAIプロバイダーを指定
-#   - "openai": OpenAI API（デフォルト）
-#   - "azure": Azure OpenAI Service
 PROVIDER = settings.ai_provider
-
-# 【各プロバイダーの違い】
-# OpenAI:
-#   - APIキーのみで利用可能
-#   - 最新モデルにすぐアクセス可能
-#   - 従量課金
-#
-# Azure OpenAI:
-#   - Azureサブスクリプションが必要
-#   - 企業向けセキュリティ・コンプライアンス
-#   - リージョン選択可能
-#   - SLAあり
 
 
 def get_chat_client():
     """
     AIプロバイダーに応じたチャットクライアントを返す
 
-    【なぜこの関数を作るか】
-    - chat_service.pyからプロバイダーの詳細を隠蔽する
-    - 切り替え時にこのファイルだけ変更すればOK
-    - 将来的に他のプロバイダー（Anthropic等）も追加しやすい
+    【処理フロー】
+    1. AI_PROVIDER 環境変数をチェック
+    2. "azure" なら AzureOpenAIChatClient を返す（現在未実装）
+    3. それ以外なら OpenAIChatClient を返す
+
+    【なぜこの実装か】
+    - ファクトリーパターンで、呼び出し側は具体的なクライアントを知らなくていい
+    - 将来的に Anthropic 等のプロバイダーも追加しやすい
 
     Returns:
         OpenAIChatClient または AzureOpenAIChatClient
@@ -53,77 +48,13 @@ def get_chat_client():
         ValueError: APIキーが未設定の場合
     """
     if PROVIDER == "azure":
-        # ---------------------------------------------------------------------------
-        # Azure OpenAI設定（使用時にコメント解除）
-        # ---------------------------------------------------------------------------
-        # 【必要な環境変数】
-        #   - AZURE_OPENAI_ENDPOINT: リソースのエンドポイントURL
-        #   - AZURE_OPENAI_DEPLOYMENT: デプロイメント名
-        #
-        # 【認証方法】
-        #   - DefaultAzureCredential: Azure CLIログイン、マネージドID等を自動検出
-        #   - APIキーも使用可能（AzureKeyCredentialを使用）
-        # ---------------------------------------------------------------------------
-        # endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        # deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-        #
-        # if not endpoint or not deployment:
-        #     raise ValueError(
-        #         "Azure OpenAIを使用するには AZURE_OPENAI_ENDPOINT と "
-        #         "AZURE_OPENAI_DEPLOYMENT を設定してください"
-        #     )
-        #
-        # return AzureOpenAIChatClient(
-        #     endpoint=endpoint,
-        #     credential=DefaultAzureCredential(),
-        #     deployment=deployment
-        # )
-        raise NotImplementedError(
-            "Azure OpenAIは現在未設定です。"
-            "agent_config.py のコメントを解除して設定してください。"
-        )
+        raise NotImplementedError("Azure OpenAIは現在未設定です")
 
-    else:
-        # ---------------------------------------------------------------------------
-        # OpenAI設定（デフォルト）
-        # ---------------------------------------------------------------------------
-        api_key = settings.openai_api_key
-        # 使用するモデルID
-        model_id = settings.openai_chat_model_id
+    api_key = settings.openai_api_key
+    model_id = settings.openai_chat_model_id
 
-        if not api_key:
-            raise ValueError(
-                "OpenAIを使用するには OPENAI_API_KEY を設定してください"
-            )
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY を設定してください")
 
-        logger.info(f"OpenAIクライアント作成: model={model_id}")
-        return OpenAIChatClient(api_key=api_key, model_id=model_id)
-
-
-# =============================================================================
-# 【解説】このファイルの設計意図
-# =============================================================================
-#
-# 【なぜこの構成にしたのか】
-# 1. 単一責任の原則: プロバイダー設定だけを担当するファイル
-# 2. 依存性注入パターン: chat_serviceは具体的なクライアントを知らなくていい
-# 3. 設定の一元管理: プロバイダー切り替えがこのファイルだけで完結
-#
-# 【他の方法】
-# 方法1: chat_service.py内に直接書く
-#   - メリット: ファイルが少なくなる
-#   - デメリット: 切り替え時にメイン処理のファイルを触る必要がある
-#
-# 方法2: 環境変数だけで切り替え（条件分岐をchat_serviceに書く）
-#   - メリット: 設定ファイルが不要
-#   - デメリット: chat_serviceが複雑になる
-#
-# 方法3: ファクトリーパターン + 設定クラス（今回の方法）
-#   - メリット: 拡張しやすい、テストしやすい
-#   - デメリット: ファイルが1つ増える
-#
-# 【注意点】
-# - Azure使用時はazure-identityのインストールが必要
-# - DefaultAzureCredentialを使うには、事前にAzure CLIでログインするか、
-#   マネージドIDを設定する必要がある
-# - APIキー認証も可能（本番ではマネージドIDを推奨）
+    logger.info(f"OpenAIクライアント作成: model={model_id}")
+    return OpenAIChatClient(api_key=api_key, model_id=model_id)

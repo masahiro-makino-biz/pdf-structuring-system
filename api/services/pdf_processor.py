@@ -1,7 +1,22 @@
 # =============================================================================
 # api/services/pdf_processor.py - PDF処理サービス
 # =============================================================================
-# PDF→画像変換、GPT-4o解析、MongoDB保存を行う内部サービス
+#
+# 【ファイル概要】
+# PDFファイルを画像に変換し、GPT-4o Vision APIで構造化データを抽出する。
+# 抽出結果はMongoDBに保存される。
+#
+# 【処理フロー】
+# 1. main.py の /admin/process/{id} から process_pdf() が呼ばれる
+# 2. pdf_to_images() でPDFを各ページPNG画像に変換
+# 3. extract_page_data() で各画像をGPT-4oに送信、構造化JSONを取得
+# 4. MongoDBの structured_data コレクションに保存
+#
+# 【依存関係】
+# - pdf2image : PDF→画像変換（内部でpopplerを使用）
+# - openai    : GPT-4o Vision API呼び出し
+# - MongoDB   : 構造化データ保存
+#
 # =============================================================================
 
 import base64
@@ -14,9 +29,6 @@ from pdf2image import convert_from_path
 from PIL import Image
 from openai import OpenAI
 
-# =============================================================================
-# 設定とロギング
-# =============================================================================
 from core.config import get_settings
 from core.logging import get_logger
 
@@ -26,23 +38,48 @@ OPENAI_API_KEY = settings.openai_api_key
 DATA_DIR = Path(settings.data_dir)
 
 
-# =============================================================================
-# ユーティリティ関数
-# =============================================================================
-
 def image_to_base64(image: Image.Image, format: str = "PNG") -> str:
-    """PIL ImageをBase64文字列に変換"""
+    """
+    PIL ImageをBase64文字列に変換
+
+    【なぜこの実装か】
+    - GPT-4o Vision APIは画像をBase64形式で受け取る
+    - BytesIOを使ってメモリ上で変換することでファイルI/Oを避ける
+
+    Args:
+        image: PIL Imageオブジェクト
+        format: 画像フォーマット
+
+    Returns:
+        Base64エンコードされた文字列
+    """
     buffer = BytesIO()
     image.save(buffer, format=format)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-# =============================================================================
-# PDF処理関数
-# =============================================================================
-
 def pdf_to_images(pdf_path: str, tenant: str, file_id: str, dpi: int = 150) -> dict:
-    """PDFを画像に変換"""
+    """
+    PDFを画像に変換
+
+    【処理フロー】
+    1. pdf2image.convert_from_path() でPDFを画像リストに変換
+    2. 各ページを /data/{tenant}/images/{file_id}/page_001.png 形式で保存
+    3. 保存したパスのリストを返す
+
+    【なぜこの実装か】
+    - GPT-4o Vision APIは画像を入力とするため、PDFを画像に変換する必要がある
+    - dpi=150 は品質とファイルサイズのバランス
+
+    Args:
+        pdf_path: PDFファイルのパス
+        tenant: テナントID
+        file_id: ファイルID
+        dpi: 解像度
+
+    Returns:
+        {"success": bool, "image_paths": [...], "total_pages": int}
+    """
     pdf_file = Path(pdf_path)
     if not pdf_file.exists():
         return {"success": False, "error": f"PDFファイルが見つかりません: {pdf_path}"}
@@ -71,7 +108,27 @@ def pdf_to_images(pdf_path: str, tenant: str, file_id: str, dpi: int = 150) -> d
 
 
 def extract_page_data(image_path: str, page_number: int = 1) -> dict:
-    """画像からGPT-4oで構造化データを抽出"""
+    """
+    画像からGPT-4oで構造化データを抽出
+
+    【処理フロー】
+    1. 画像を読み込み、大きすぎる場合はリサイズ
+    2. Base64に変換
+    3. GPT-4o Vision APIにプロンプトと画像を送信
+    4. 返ってきたJSONをパースして返す
+
+    【なぜこの実装か】
+    - GPT-4oのVision機能を使い、画像から直接情報を抽出
+    - response_format={"type": "json_object"} でJSON形式を強制
+    - max_size=2048 はAPIの推奨サイズ
+
+    Args:
+        image_path: 画像ファイルのパス
+        page_number: ページ番号
+
+    Returns:
+        {"success": bool, "data": {...}, "tokens_used": int}
+    """
     if not OPENAI_API_KEY:
         return {"success": False, "error": "OPENAI_API_KEYが設定されていません"}
 
@@ -91,16 +148,38 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     prompt = """
-この画像はPDFの1ページです。以下の情報を抽出してJSON形式で返してください。
+この画像はミル機器の点検記録PDFの1ページです。以下のJSON形式で情報を抽出してください。
 
-抽出する情報:
-- title: ページのタイトルや見出し（なければnull）
-- summary: ページ内容の要約（2-3文で）
-- key_points: 重要なポイントのリスト（箇条書きの内容など）
-- has_table: 表が含まれているか（true/false）
-- has_figure: 図やグラフが含まれているか（true/false）
+{
+  "records": [
+    {
+      "機器": "対象機器の名称（例: 2号機微粉炭機D）",
+      "機器部品": "図面上の名称や記録項目に記載の部品名（例: リンクサポート）",
+      "計測箇所": "測定を行った具体的な場所",
+      "点検項目": "記録対象となる項目名（例: プレッシャーフレームリンクサポート計測記録）",
+      "点検年月日": "YYYY-MM-DD形式の日付",
+      "測定者": "測定担当者の氏名",
+      "計測器具": "使用した測定器具（例: 直尺R300mm（S481））",
+      "単位": "測定値の単位（例: mm, ℃）",
+      "測定値": {
+        "階層パス形式のキー": 数値または文字列,
+        "例: タイヤ①・a・上": 5.2,
+        "例: A・No1・調整後": 3.0
+      },
+      "基準値": {
+        "階層パス形式のキー": 数値または文字列,
+        "例: 上限": 6.0,
+        "例: 下限": 4.0
+      }
+    }
+  ]
+}
 
-JSONのみを返してください。説明文は不要です。
+注意事項:
+- 測定値と基準値のキーは「・」区切りで階層を表現する（スラッシュではなく中点）
+- 1ページに複数の記録がある場合はrecords配列に複数要素を入れる
+- 見つからない項目はnullを設定
+- JSONのみを返してください。説明文は不要です。
 """
 
     try:
@@ -142,7 +221,28 @@ JSONのみを返してください。説明文は不要です。
 
 
 async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
-    """PDFを一括処理: 画像変換→AI解析→MongoDB保存"""
+    """
+    PDFを一括処理: 画像変換→AI解析→MongoDB保存
+
+    【処理フロー】
+    1. MongoDBからファイル情報を取得
+    2. pdf_to_images() でPDFを画像に変換
+    3. 各ページに対して extract_page_data() でAI構造化
+    4. 結果を structured_data コレクションに保存
+    5. files コレクションの processed フラグを更新
+
+    【なぜこの実装か】
+    - 非同期関数にすることで、DB操作中に他のリクエストをブロックしない
+    - 各ページを順番に処理することで、API rate limitに対応
+
+    Args:
+        db: MongoDBデータベースオブジェクト
+        file_id: 処理するファイルのID
+        tenant: テナントID
+
+    Returns:
+        {"success": bool, "total_pages": int, "pages_processed": int}
+    """
 
     # 1. ファイル情報を取得
     file_doc = await db.files.find_one({"file_id": file_id, "tenant": tenant})
