@@ -10,12 +10,12 @@
 # 1. main.py の /admin/process/{id} から process_pdf() が呼ばれる
 # 2. pdf_to_images() でPDFを各ページPNG画像に変換
 # 3. extract_page_data() で各画像をGPT-4oに送信、構造化JSONを取得
-# 4. MongoDBの structured_data コレクションに保存
+# 4. MongoDBの documents コレクションを更新（処理結果を追加）
 #
 # 【依存関係】
 # - pdf2image : PDF→画像変換（内部でpopplerを使用）
 # - openai    : GPT-4o Vision API呼び出し
-# - MongoDB   : 構造化データ保存
+# - MongoDB   : documents コレクション（ファイル情報と処理結果を統合）
 #
 # =============================================================================
 
@@ -107,27 +107,102 @@ def pdf_to_images(pdf_path: str, tenant: str, file_id: str, dpi: int = 150) -> d
     }
 
 
+# =============================================================================
+# JSONスキーマ定義（Structured Outputs用）
+# =============================================================================
+JSON_SCHEMA = {
+    "name": "mill_inspection_data",
+    "strict": False,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["records"],
+        "properties": {
+            "records": {
+                "type": "array",
+                "description": "個々の点検記録を要素として持つ配列。1ページに複数の表がある場合は複数要素。",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "機器", "機器部品", "計測箇所", "点検項目",
+                        "点検年月日", "測定者", "計測器具", "単位", "測定値", "基準値"
+                    ],
+                    "properties": {
+                        "機器": {
+                            "type": ["string", "null"],
+                            "description": "対象となるミル機器の名称。例：2号機微粉炭機D"
+                        },
+                        "機器部品": {
+                            "type": ["string", "null"],
+                            "description": "図面上の名称・もしくは記録項目に記載のケースが多い。例：リンクサポート隙間計測"
+                        },
+                        "計測箇所": {
+                            "type": ["string", "null"],
+                            "description": "測定を行った具体的な場所"
+                        },
+                        "点検項目": {
+                            "type": ["string", "null"],
+                            "description": "記録対象となる項目。例：プレッシャーフレームリンクサポート計測記録"
+                        },
+                        "点検年月日": {
+                            "type": ["string", "null"],
+                            "description": "記録を実施した日付。ISO形式（YYYY-MM-DD）を推奨。"
+                        },
+                        "測定者": {
+                            "type": ["string", "null"],
+                            "description": "測定を担当した人物の氏名。"
+                        },
+                        "計測器具": {
+                            "type": ["string", "null"],
+                            "description": "使用した測定器具の名称や型式。例：直尺R300mm（S481）"
+                        },
+                        "単位": {
+                            "type": ["string", "null"],
+                            "description": "測定値の単位。例：mm, ℃"
+                        },
+                        "測定値": {
+                            "type": "object",
+                            "description": "測定結果を表す。キーは「・」区切りで階層パス形式（例：タイヤ①・a・上）",
+                            "additionalProperties": {
+                                "type": ["number", "string", "null"]
+                            }
+                        },
+                        "基準値": {
+                            "type": "object",
+                            "description": "測定値と比較する基準値。キーは「・」区切りの階層パス形式。±などは文字列で表現。",
+                            "additionalProperties": {
+                                "type": ["number", "string", "null"]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 def extract_page_data(image_path: str, page_number: int = 1) -> dict:
     """
-    画像からGPT-4oで構造化データを抽出
+    画像からGPT-4oで構造化データを抽出（Structured Outputs使用）
 
     【処理フロー】
     1. 画像を読み込み、大きすぎる場合はリサイズ
     2. Base64に変換
-    3. GPT-4o Vision APIにプロンプトと画像を送信
-    4. 返ってきたJSONをパースして返す
+    3. GPT-4o Vision APIにJSONスキーマと画像を送信
+    4. スキーマに従った構造化JSONを取得
 
     【なぜこの実装か】
-    - GPT-4oのVision機能を使い、画像から直接情報を抽出
-    - response_format={"type": "json_object"} でJSON形式を強制
-    - max_size=2048 はAPIの推奨サイズ
+    - Structured Outputsを使用し、JSONスキーマに厳密に従った出力を保証
+    - GPT-4oのVision機能で画像から直接情報を抽出
 
     Args:
         image_path: 画像ファイルのパス
         page_number: ページ番号
 
     Returns:
-        {"success": bool, "data": {...}, "tokens_used": int}
+        {"success": bool, "data": {...}}
     """
     if not OPENAI_API_KEY:
         return {"success": False, "error": "OPENAI_API_KEYが設定されていません"}
@@ -147,49 +222,42 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    prompt = """
-この画像はミル機器の点検記録PDFの1ページです。以下のJSON形式で情報を抽出してください。
+    system_prompt = (
+        "あなたは発電所の点検記録画像から、指定のJSONスキーマに厳密準拠したJSONを出力する専門家です。\n"
+        "出力はJSONのみ（説明・コードフェンス禁止）。\n"
+        "・トップはobject。\n"
+        "・'records' は1ページから読み取れるレコード配列。1つの表につき1つのrecord。\n"
+        "・各レコードはスキーマ上の全フィールドを必ず持つ（値が未知でもnullを許容）。\n"
+        "・スキーマに存在しないキーは出さない。\n"
+        "・表の行名（摩耗量/振動値/温度など）と列名（①/A/上など）を組み合わせて'測定値'と'基準値'のパス型キーとして格納。\n"
+    )
 
-{
-  "records": [
-    {
-      "機器": "対象機器の名称（例: 2号機微粉炭機D）",
-      "機器部品": "図面上の名称や記録項目に記載の部品名（例: リンクサポート）",
-      "計測箇所": "測定を行った具体的な場所",
-      "点検項目": "記録対象となる項目名（例: プレッシャーフレームリンクサポート計測記録）",
-      "点検年月日": "YYYY-MM-DD形式の日付",
-      "測定者": "測定担当者の氏名",
-      "計測器具": "使用した測定器具（例: 直尺R300mm（S481））",
-      "単位": "測定値の単位（例: mm, ℃）",
-      "測定値": {
-        "階層パス形式のキー": 数値または文字列,
-        "例: タイヤ①・a・上": 5.2,
-        "例: A・No1・調整後": 3.0
-      },
-      "基準値": {
-        "階層パス形式のキー": 数値または文字列,
-        "例: 上限": 6.0,
-        "例: 下限": 4.0
-      }
-    }
-  ]
-}
-
-注意事項:
-- 測定値と基準値のキーは「・」区切りで階層を表現する（スラッシュではなく中点）
-- 1ページに複数の記録がある場合はrecords配列に複数要素を入れる
-- 見つからない項目はnullを設定
-- JSONのみを返してください。説明文は不要です。
-"""
+    user_prompt = (
+        "次の画像から指定スキーマに準拠したJSONを出力してください。\n"
+        "注意:\n"
+        "1) 1つの表につき1つのrecordを作成（行ごとではなく表ごと）。\n"
+        "2) 表内の各行（摩耗量、振動値、温度など）は測定値のキーに含める。例：「摩耗量・タイヤ①」「振動値・A点」。\n"
+        "3) '測定値'/'基準値'はオブジェクトで、キーは「・」区切りの階層パス形式。\n"
+        "4) 未知/空欄/スラッシュ/×/- などはnullを格納。\n"
+        "5) 表にある値は漏れなく全て取得。\n"
+        "6) 記載のない情報を推測で入れない。記載のある情報のみをもとに出力。\n"
+        "7) ハルシネーションは厳禁。\n"
+        "8) JSONのみ。余計な文章は一切禁止。\n"
+        "9) 日付はYYYY-MM-DD形式。\n"
+    )
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": user_prompt},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -200,8 +268,11 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
                     ],
                 }
             ],
-            max_tokens=1000,
-            response_format={"type": "json_object"}
+            max_tokens=4000,
+            response_format={
+                "type": "json_schema",
+                "json_schema": JSON_SCHEMA
+            }
         )
 
         result_text = response.choices[0].message.content
@@ -211,7 +282,6 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
             "success": True,
             "page_number": page_number,
             "data": structured_data,
-            "tokens_used": response.usage.total_tokens if response.usage else None
         }
 
     except json.JSONDecodeError as e:
@@ -244,8 +314,8 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
         {"success": bool, "total_pages": int, "pages_processed": int}
     """
 
-    # 1. ファイル情報を取得
-    file_doc = await db.files.find_one({"file_id": file_id, "tenant": tenant})
+    # 1. ファイル情報を取得（pages コレクションの未処理ドキュメント）
+    file_doc = await db.pages.find_one({"file_id": file_id, "tenant": tenant})
     if not file_doc:
         return {"success": False, "error": f"ファイルが見つかりません: {file_id}"}
 
@@ -259,9 +329,12 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
 
     image_paths = conversion_result["image_paths"]
     total_pages = conversion_result["total_pages"]
+    processed_at = datetime.utcnow()
 
-    # 3. 各ページをAI解析
-    pages_data = []
+    # 3. 各ページをAI解析し、レコードごとに pages コレクションに保存
+    records_processed = 0
+    pages_with_errors = 0
+
     for i, image_path in enumerate(image_paths):
         page_num = i + 1
         logger.info(f"ページ処理中: {page_num}/{total_pages}")
@@ -269,47 +342,54 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
         extraction_result = extract_page_data(image_path, page_num)
 
         if extraction_result["success"]:
-            pages_data.append({
-                "page_number": page_num,
-                "image_path": image_path,
-                "data": extraction_result["data"],
-                "tokens_used": extraction_result.get("tokens_used")
-            })
+            # レコードごとにドキュメントを作成
+            records = extraction_result["data"].get("records", [])
+            for record_idx, record_data in enumerate(records):
+                record_doc = {
+                    # メタデータ
+                    "file_id": file_id,
+                    "filename": filename,
+                    "path": file_doc["path"],
+                    "tenant": tenant,
+                    "uploaded_at": file_doc["uploaded_at"],
+                    "processed": True,
+                    "processed_at": processed_at,
+                    "page_number": page_num,
+                    "table_index": record_idx + 1,
+                    "table_title": record_data.get("点検項目"),
+                    "image_path": image_path,
+                    # データ（スキーマに従った構造化データ）
+                    "data": record_data,
+                }
+                await db.pages.insert_one(record_doc)
+                records_processed += 1
         else:
-            pages_data.append({
+            # エラーの場合はページ単位で保存
+            error_doc = {
+                "file_id": file_id,
+                "filename": filename,
+                "path": file_doc["path"],
+                "tenant": tenant,
+                "uploaded_at": file_doc["uploaded_at"],
+                "processed": True,
+                "processed_at": processed_at,
                 "page_number": page_num,
+                "table_index": None,
+                "table_title": None,
                 "image_path": image_path,
-                "error": extraction_result.get("error")
-            })
+                "error": extraction_result.get("error"),
+            }
+            await db.pages.insert_one(error_doc)
+            pages_with_errors += 1
 
-    # 4. 結果をMongoDBに保存
-    structured_doc = {
-        "file_id": file_id,
-        "filename": filename,
-        "tenant": tenant,
-        "total_pages": total_pages,
-        "pages": pages_data,
-        "processed_at": datetime.utcnow(),
-        "status": "completed"
-    }
-
-    await db.structured_data.update_one(
-        {"file_id": file_id},
-        {"$set": structured_doc},
-        upsert=True
-    )
-
-    # 5. ファイル情報も更新
-    await db.files.update_one(
-        {"file_id": file_id},
-        {"$set": {"processed": True, "processed_at": datetime.utcnow()}}
-    )
+    # 4. 未処理ドキュメント（page_number: null）を削除
+    await db.pages.delete_one({"file_id": file_id, "tenant": tenant, "page_number": None})
 
     return {
         "success": True,
         "file_id": file_id,
         "filename": filename,
         "total_pages": total_pages,
-        "pages_processed": len([p for p in pages_data if "data" in p]),
-        "pages_with_errors": len([p for p in pages_data if "error" in p])
+        "records_processed": records_processed,
+        "pages_with_errors": pages_with_errors
     }

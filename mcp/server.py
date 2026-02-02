@@ -12,7 +12,7 @@
 # 3. 検索条件に部分一致するレコードを返す
 #
 # 【依存関係】
-# - MongoDB : structured_data コレクションを検索
+# - MongoDB : documents コレクションを検索（processed: true のみ）
 # - FastAPI : HTTPエンドポイント提供
 # - FastMCP : 将来的にClaudeから直接呼び出す用（現在は未使用）
 #
@@ -115,69 +115,63 @@ async def _search_documents_async(
     if not search_conditions:
         return {"success": False, "error": "検索条件を1つ以上指定してください", "results": []}
 
-    # 構造化データを取得
-    cursor = db.structured_data.find({"tenant": tenant})
-    all_docs = await cursor.to_list(100)
+    # pages コレクションから処理済みページを検索（page_number が null でないもの）
+    all_pages = await db.pages.find({
+        "tenant": tenant,
+        "page_number": {"$ne": None}
+    }).to_list(500)
 
-    results = []
+    # ファイルごとにマッチしたページをグループ化
+    file_results = {}
 
-    for doc in all_docs:
-        matched_pages = []
+    for page in all_pages:
+        if "error" in page:
+            continue
 
-        for page in doc.get("pages", []):
-            if "error" in page:
-                continue
+        # data 直下にフィールドがある新構造に対応
+        page_data = page.get("data", {})
 
-            page_data = page.get("data", {})
-            records = page_data.get("records") or []
+        # 検索条件とのマッチをチェック
+        match_count = 0
+        matched_fields = []
 
-            # 各レコードをチェック
-            matched_records = []
-            for record in records:
-                match_count = 0
-                matched_fields = []
+        for field_name, search_value in search_conditions:
+            search_lower = search_value.lower()
+            stored_value = (page_data.get(field_name) or "").lower()
 
-                for field_name, search_value in search_conditions:
-                    search_lower = search_value.lower()
-                    stored_value = (record.get(field_name) or "").lower()
+            if search_lower in stored_value:
+                match_count += 1
+                matched_fields.append(field_name)
 
-                    if search_lower in stored_value:
-                        match_count += 1
-                        matched_fields.append(field_name)
+        if match_count > 0:
+            file_id = page.get("file_id")
 
-                if match_count > 0:
-                    matched_records.append({
-                        "機器": record.get("機器"),
-                        "機器部品": record.get("機器部品"),
-                        "計測箇所": record.get("計測箇所"),
-                        "点検項目": record.get("点検項目"),
-                        "点検年月日": record.get("点検年月日"),
-                        "測定者": record.get("測定者"),
-                        "計測器具": record.get("計測器具"),
-                        "単位": record.get("単位"),
-                        "測定値": record.get("測定値"),
-                        "基準値": record.get("基準値"),
-                        "matched_fields": matched_fields,
-                        "match_score": match_count / len(search_conditions)
-                    })
+            if file_id not in file_results:
+                file_results[file_id] = {
+                    "file_id": file_id,
+                    "filename": page.get("filename", "不明"),
+                    "matched_records": [],
+                    "total_matches": 0
+                }
 
-            if matched_records:
-                matched_pages.append({
-                    "page_number": page.get("page_number"),
-                    "image_path": page.get("image_path", ""),
-                    "matched_records": matched_records
-                })
-
-        if matched_pages:
-            results.append({
-                "file_id": doc.get("file_id"),
-                "filename": doc.get("filename"),
-                "matched_pages": matched_pages[:3],
-                "total_matches": sum(len(p["matched_records"]) for p in matched_pages)
+            file_results[file_id]["matched_records"].append({
+                "page_number": page.get("page_number"),
+                "table_index": page.get("table_index"),
+                "inspection_item": page_data.get("点検項目"),
+                "image_path": page.get("image_path", ""),
+                "data": page_data,
+                "matched_fields": matched_fields,
+                "match_score": match_count / len(search_conditions)
             })
+            file_results[file_id]["total_matches"] += 1
 
-    # 結果をマッチ数でソート
+    # 結果をリスト化してマッチ数でソート
+    results = list(file_results.values())
     results.sort(key=lambda x: x["total_matches"], reverse=True)
+
+    # matched_records を最大5件に制限
+    for r in results:
+        r["matched_records"] = r["matched_records"][:5]
 
     return {
         "success": True,

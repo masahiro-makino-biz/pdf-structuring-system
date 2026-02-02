@@ -5,6 +5,7 @@
 import streamlit as st
 import requests
 import os
+import uuid
 
 # =============================================================================
 # 設定
@@ -102,7 +103,7 @@ def admin_page():
                             if process_response.status_code == 200:
                                 process_result = process_response.json()
                                 if process_result.get("success"):
-                                    st.write(f"解析完了: {process_result.get('pages_processed')}ページ処理")
+                                    st.write(f"解析完了: {process_result.get('records_processed')}レコードを抽出")
                                     status.update(label="処理完了", state="complete")
                                     # 処理成功を記録
                                     st.session_state.processed_files.add(file_key)
@@ -142,7 +143,7 @@ def admin_page():
         response = requests.get(
             f"{API_URL}/admin/files",
             params={"tenant": tenant_id},
-            timeout=10,
+            timeout=30,
         )
 
         if response.status_code == 200:
@@ -157,40 +158,31 @@ def admin_page():
                             struct_response = requests.get(
                                 f"{API_URL}/admin/structured/{f['file_id']}",
                                 params={"tenant": tenant_id},
-                                timeout=10,
+                                timeout=30,
                             )
 
                             if struct_response.status_code == 200:
                                 data = struct_response.json()
 
-                                st.caption(f"処理日時: {data.get('processed_at', 'N/A')}")
+                                st.caption(f"処理日時: {data.get('processed_at', 'N/A')} / レコード数: {data.get('total_records', 0)}")
 
-                                pages = data.get("pages", [])
-                                for page in pages:
-                                    page_num = page.get("page_number", "?")
-
-                                    if "error" in page:
-                                        st.error(f"ページ {page_num}: {page['error']}")
-                                    else:
-                                        page_data = page.get("data", {})
-
-                                        st.markdown(f"**ページ {page_num}**")
-
-                                        title = page_data.get("title")
-                                        if title:
-                                            st.write(f"タイトル: {title}")
-
-                                        summary = page_data.get("summary")
-                                        if summary:
-                                            st.write(f"要約: {summary}")
-
-                                        key_points = page_data.get("key_points", [])
-                                        if key_points:
-                                            st.write("重要ポイント:")
-                                            for point in key_points:
-                                                st.write(f"  - {point}")
-
-                                        st.divider()
+                                records = data.get("records", [])
+                                if records:
+                                    # タブでレコードごとに切り替え表示
+                                    tab_labels = [
+                                        f"P{r.get('page_number', '?')}-{r.get('table_index', '?')}: {(r.get('data', {}).get('点検項目') or '記録')[:15]}"
+                                        for r in records
+                                    ]
+                                    tabs = st.tabs(tab_labels)
+                                    for tab, record in zip(tabs, records):
+                                        with tab:
+                                            record_data = record.get("data", {})
+                                            st.caption(f"機器: {record_data.get('機器', 'N/A')} / 点検項目: {record_data.get('点検項目', 'N/A')}")
+                                            image_path = record.get("image_path")
+                                            if image_path:
+                                                st.image(image_path)
+                                            if "error" in record:
+                                                st.error(record["error"])
 
                                 # JSON表示オプション
                                 if st.checkbox(f"JSON表示", key=f"json_{f['file_id']}"):
@@ -207,7 +199,7 @@ def admin_page():
                                         delete_response = requests.delete(
                                             f"{API_URL}/admin/files/{f['file_id']}",
                                             params={"tenant": tenant_id},
-                                            timeout=10,
+                                            timeout=30,
                                         )
                                         if delete_response.status_code == 200:
                                             st.success(f"{f['filename']} を削除しました")
@@ -275,6 +267,24 @@ def user_page():
         key="chat_tenant"
     )
 
+    # セッションID（会話履歴を識別するためのID）
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+
+    # 会話リセットボタン
+    if st.sidebar.button("会話をリセット"):
+        try:
+            requests.post(
+                f"{API_URL}/chat/clear",
+                params={"session_id": st.session_state.session_id},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            pass
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.messages = []
+        st.rerun()
+
     st.caption("PDFから抽出した構造化データについて質問できます")
 
     if "messages" not in st.session_state:
@@ -299,7 +309,11 @@ def user_page():
                 try:
                     response = requests.post(
                         f"{API_URL}/chat",
-                        json={"message": prompt, "tenant": tenant_id},
+                        json={
+                            "message": prompt,
+                            "tenant": tenant_id,
+                            "session_id": st.session_state.session_id
+                        },
                         timeout=60,
                     )
 
@@ -317,13 +331,14 @@ def user_page():
                         # 検索結果に画像がある場合、収集して表示
                         if result.get("search_results") and result["search_results"].get("results"):
                             for doc in result["search_results"]["results"]:
-                                for page in doc.get("matched_pages", []):
-                                    if page.get("image_path"):
+                                for record in doc.get("matched_records", []):
+                                    if record.get("image_path"):
                                         ref_pages.append({
                                             "filename": doc["filename"],
-                                            "page_number": page["page_number"],
-                                            "image_path": page["image_path"],
-                                            "title": page.get("title", "")
+                                            "page_number": record["page_number"],
+                                            "table_index": record.get("table_index"),
+                                            "image_path": record["image_path"],
+                                            "title": record.get("inspection_item", "")
                                         })
 
                             # 折りたたみ式で画像表示

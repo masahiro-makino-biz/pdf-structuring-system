@@ -73,6 +73,13 @@ Pillow>=10.0.0
 # 【なぜ必要か】GPT-4oで画像から構造化データを抽出
 openai>=1.0.0
 
+# 【anthropic[bedrock]】Anthropic SDK + AWS Bedrock対応
+# 【なぜ必要か】AWS Bedrock経由でClaude APIを呼び出すため
+# 【他の選択肢】
+#   - boto3 + 直接Bedrock呼び出し: 低レベルで実装が複雑
+#   - agent-framework: Bedrock非対応（2025年5月時点）
+anthropic[bedrock]>=0.40.0
+
 # ---------------------------------------------------------------------------
 # Microsoft Agent Framework
 # ---------------------------------------------------------------------------

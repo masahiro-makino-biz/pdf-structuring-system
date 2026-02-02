@@ -17,6 +17,10 @@
 # - POST /admin/process/{id}: PDF処理実行（AI構造化）
 # - POST /chat              : チャット送信（AI検索）
 #
+# 【データベース】
+# - documents コレクション: ファイル情報と処理結果を統合管理
+#   （旧 files + structured_data を1つに統合）
+#
 # 【依存関係】
 # - services/pdf_processor.py : PDF処理ロジック
 # - services/chat_service.py  : チャット処理ロジック
@@ -267,8 +271,10 @@ async def upload_file(
     # PDFはバイナリファイルなので "wb" を使う
 
     # -------------------------------------------------------------------------
-    # MongoDBに記録
+    # MongoDBに記録（pages コレクションに統合）
     # -------------------------------------------------------------------------
+    # アップロード時は page_number: null で「未処理」状態を示す
+    # 処理後は各ページごとのドキュメントに置き換わる
     file_doc = {
         "file_id": file_id,
         "filename": file.filename,
@@ -277,12 +283,10 @@ async def upload_file(
         "tenant": tenant,
         "content_type": file.content_type,
         "uploaded_at": datetime.utcnow(),
+        "processed": False,
+        "page_number": None,  # 未処理状態
     }
-    await db.files.insert_one(file_doc)
-    # 【db.files とは】
-    # - db: pdf_system データベース
-    # - files: コレクション（テーブルのようなもの）
-    # MongoDBは事前にコレクションを作成しなくてもOK（自動作成）
+    await db.pages.insert_one(file_doc)
 
     # -------------------------------------------------------------------------
     # レスポンス
@@ -309,13 +313,25 @@ async def list_files(
     Returns:
         ファイル一覧
     """
-    # 【find() とは】
-    # MongoDBで条件に合うドキュメントを検索
-    # to_list(100): 最大100件をリストとして取得
-    files = await db.files.find({"tenant": tenant}).to_list(100)
+    # pages コレクションから file_id ごとにグループ化してファイル一覧を取得
+    # aggregate を使って重複を除去
+    pipeline = [
+        {"$match": {"tenant": tenant}},
+        {"$group": {
+            "_id": "$file_id",
+            "file_id": {"$first": "$file_id"},
+            "filename": {"$first": "$filename"},
+            "path": {"$first": "$path"},
+            "size": {"$first": "$size"},
+            "tenant": {"$first": "$tenant"},
+            "uploaded_at": {"$first": "$uploaded_at"},
+            "processed": {"$max": "$processed"},  # 1つでも処理済みなら True
+            "processed_at": {"$max": "$processed_at"},
+        }},
+        {"$sort": {"uploaded_at": -1}}
+    ]
+    files = await db.pages.aggregate(pipeline).to_list(100)
 
-    # 【_id を除外】
-    # MongoDBが自動で追加する _id はObjectId型でJSONに変換できないので除外
     return [
         FileInfo(
             file_id=f["file_id"],
@@ -395,7 +411,7 @@ class ProcessResponse(BaseModel):
     file_id: str
     filename: str = None
     total_pages: int = None
-    pages_processed: int = None
+    records_processed: int = None
     pages_with_errors: int = None
     error: str = None
 
@@ -423,8 +439,8 @@ async def process_pdf_endpoint(
     """
     from services.pdf_processor import process_pdf
 
-    # ファイルの存在確認
-    file_doc = await db.files.find_one({"file_id": file_id, "tenant": tenant})
+    # ファイルの存在確認（pages コレクションから）
+    file_doc = await db.pages.find_one({"file_id": file_id, "tenant": tenant})
     if not file_doc:
         raise HTTPException(
             status_code=404,
@@ -441,7 +457,7 @@ async def process_pdf_endpoint(
                 file_id=file_id,
                 filename=result.get("filename"),
                 total_pages=result.get("total_pages"),
-                pages_processed=result.get("pages_processed"),
+                records_processed=result.get("records_processed"),
                 pages_with_errors=result.get("pages_with_errors"),
             )
         else:
@@ -482,19 +498,34 @@ async def get_structured_data(
     Returns:
         構造化データ
     """
-    structured = await db.structured_data.find_one(
-        {"file_id": file_id, "tenant": tenant}
-    )
+    # pages コレクションから処理済みのレコードを取得
+    # page_number が null でないものが処理済み
+    records = await db.pages.find(
+        {"file_id": file_id, "tenant": tenant, "page_number": {"$ne": None}},
+        {"_id": 0}
+    ).sort([("page_number", 1), ("table_index", 1)]).to_list(500)
 
-    if not structured:
+    if not records:
+        # レコードがない = 未処理またはファイルが存在しない
+        file_exists = await db.pages.find_one({"file_id": file_id, "tenant": tenant})
+        if not file_exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"ファイルが見つかりません: {file_id}"
+            )
         raise HTTPException(
             status_code=404,
-            detail=f"構造化データが見つかりません: {file_id}"
+            detail=f"構造化データが見つかりません（未処理）: {file_id}"
         )
 
-    # MongoDBの_idを除外して返す
-    structured.pop("_id", None)
-    return structured
+    # 最初のレコードから processed_at を取得
+    processed_at = records[0].get("processed_at") if records else None
+
+    return {
+        "records": records,
+        "total_records": len(records),
+        "processed_at": processed_at,
+    }
 
 
 @app.delete("/admin/files/{file_id}")
@@ -506,9 +537,8 @@ async def delete_file(
     ファイルと関連データを削除
 
     【削除対象】
-    1. files コレクションのレコード
-    2. structured_data コレクションのレコード
-    3. 実ファイル（PDF、画像）
+    1. pages コレクションのレコード（該当ファイルの全ページ）
+    2. 実ファイル（PDF、画像）
 
     Args:
         file_id: 削除するファイルのID
@@ -519,8 +549,8 @@ async def delete_file(
     """
     import shutil
 
-    # ファイル情報を取得
-    file_doc = await db.files.find_one({"file_id": file_id, "tenant": tenant})
+    # ファイル情報を取得（pages コレクションから）
+    file_doc = await db.pages.find_one({"file_id": file_id, "tenant": tenant})
     if not file_doc:
         raise HTTPException(
             status_code=404,
@@ -542,9 +572,8 @@ async def delete_file(
         # ファイル削除に失敗してもDB削除は続行
         logger.warning(f"ファイル削除エラー: {e}")
 
-    # MongoDBから削除
-    await db.files.delete_one({"file_id": file_id, "tenant": tenant})
-    await db.structured_data.delete_one({"file_id": file_id, "tenant": tenant})
+    # MongoDBから削除（pages コレクションのみ）
+    await db.pages.delete_many({"file_id": file_id, "tenant": tenant})
 
     return {
         "success": True,
@@ -562,6 +591,7 @@ class ChatRequest(BaseModel):
     """チャットリクエスト"""
     message: str
     tenant: str = "default"
+    session_id: str = "default"
 
 
 class ChatResponse(BaseModel):
@@ -569,7 +599,7 @@ class ChatResponse(BaseModel):
     success: bool
     response: str
     search_performed: bool = False
-    search_results: dict | None = None  # 検索結果（画像パス含む）
+    search_results: dict | None = None
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -577,14 +607,16 @@ async def chat(request: ChatRequest):
     """
     チャットエンドポイント
 
-    【処理の流れ】
+    【処理フロー】
     1. ユーザーメッセージを受信
-    2. OpenAI GPT-4oが検索が必要か判断
-    3. 必要ならMCP経由でMongoDBを検索
-    4. 検索結果を元に回答を生成
+    2. セッションの履歴を取得して文脈を構築
+    3. OpenAI GPT-4oが検索が必要か判断
+    4. 必要ならMCP経由でMongoDBを検索
+    5. 検索結果を元に回答を生成
+    6. 履歴に追加
 
     Args:
-        request: チャットリクエスト（メッセージ、テナントID）
+        request: チャットリクエスト（メッセージ、テナントID、セッションID）
 
     Returns:
         AIの回答
@@ -593,12 +625,34 @@ async def chat(request: ChatRequest):
 
     result = await process_chat(
         message=request.message,
-        tenant=request.tenant
+        tenant=request.tenant,
+        session_id=request.session_id
     )
 
     return ChatResponse(
         success=result.get("success", False),
         response=result.get("response", "エラーが発生しました"),
         search_performed=result.get("search_performed", False),
-        search_results=result.get("search_results")  # 検索結果（画像パス含む）
+        search_results=result.get("search_results")
     )
+
+
+@app.post("/chat/clear")
+async def clear_chat_history(session_id: str = Query(default="default")):
+    """
+    チャット履歴をクリア
+
+    【なぜこのAPIが必要か】
+    - ユーザーが新しい話題を始めたいとき
+    - 履歴が長くなりすぎてトークン消費が増えたとき
+
+    Args:
+        session_id: クリアするセッションのID
+
+    Returns:
+        成功メッセージ
+    """
+    from services.chat_service import clear_history
+
+    clear_history(session_id)
+    return {"success": True, "message": f"セッション {session_id} の履歴をクリアしました"}

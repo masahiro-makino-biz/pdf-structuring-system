@@ -79,9 +79,9 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # AI設定
     # -------------------------------------------------------------------------
-    ai_provider: Literal["openai", "azure"] = Field(
+    ai_provider: Literal["openai", "azure", "bedrock"] = Field(
         default="openai",
-        description="AIプロバイダー（openai または azure）"
+        description="AIプロバイダー（openai, azure, bedrock）"
     )
     openai_api_key: str = Field(
         default="",
@@ -112,6 +112,29 @@ class Settings(BaseSettings):
     azure_openai_deployment: str = Field(
         default="",
         description="Azure OpenAI デプロイメント名"
+    )
+
+    # -------------------------------------------------------------------------
+    # AWS Bedrock設定
+    # -------------------------------------------------------------------------
+    # 【なぜBedrock設定を分離したか】
+    # - AWS認証情報はOpenAI/Azureとは別の体系
+    # - リージョンやモデルIDもAWS固有のフォーマット
+    aws_region: str = Field(
+        default="us-east-1",
+        description="AWSリージョン（Claudeが利用可能なリージョン）"
+    )
+    aws_access_key_id: str = Field(
+        default="",
+        description="AWSアクセスキーID"
+    )
+    aws_secret_access_key: str = Field(
+        default="",
+        description="AWSシークレットアクセスキー"
+    )
+    bedrock_model_id: str = Field(
+        default="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        description="BedrockモデルID（通常のClaude IDとは異なる形式）"
     )
 
     # -------------------------------------------------------------------------
