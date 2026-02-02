@@ -426,22 +426,7 @@ def create_agent():
 
     return client.as_agent(
         name="DocumentAssistant",
-        instructions="""あなたはミル機器の点検記録PDFに関する質問に答えるアシスタントです。
-
-ユーザーが点検記録について質問した場合は、search_documents関数を使って検索してください。
-検索には以下の4つの条件が使えます（1つ以上指定が必要）:
-- equipment: 機器名（例: "2号機微粉炭機D"）
-- equipment_part: 機器部品名（例: "リンクサポート"）
-- inspection_item: 点検項目（例: "隙間計測"）
-- inspection_date: 点検年月日（例: "2024-01-15", "2024"）
-
-ユーザーの質問から適切な条件を抽出して検索してください。
-検索結果には測定値と基準値が含まれているので、それを参照して回答してください。
-
-会話の文脈を考慮して回答してください。例えば「去年のは？」と聞かれたら、
-直前の会話で話題になっていた機器について検索してください。
-
-検索結果がない場合や、一般的な質問の場合は、そのまま回答してください。""",
+        instructions=SYSTEM_PROMPT,
         tools=[search_documents]
     )
 

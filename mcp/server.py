@@ -45,27 +45,6 @@ def init_mongo():
         db = mongo_client.pdf_system
 
 
-@mcp.tool()
-def hello(name: str = "World") -> str:
-    """動作確認用のシンプルなツール"""
-    return f"Hello, {name}! MCP server is working."
-
-
-@mcp.tool()
-def get_server_status() -> dict:
-    """サーバーの状態を返す"""
-    return {
-        "status": "running",
-        "phase": 4,
-        "openai_configured": bool(OPENAI_API_KEY),
-        "available_tools": [
-            "hello",
-            "get_server_status",
-            "search_documents",
-        ],
-    }
-
-
 async def _search_documents_async(
     equipment: str = "",
     equipment_part: str = "",
@@ -184,38 +163,6 @@ async def _search_documents_async(
         "total_documents": len(results),
         "results": results[:limit]
     }
-
-
-@mcp.tool()
-def search_documents(
-    equipment: str = "",
-    equipment_part: str = "",
-    inspection_item: str = "",
-    inspection_date: str = "",
-    tenant: str = "default",
-    limit: int = 5
-) -> dict:
-    """
-    ミル機器の点検記録を検索（MCPツール版）
-
-    【なぜこの実装か】
-    - @mcp.tool() は将来Claudeから直接呼び出す用
-    - 現在は未使用（HTTP API経由で呼び出し）
-    """
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(_search_documents_async(
-            equipment=equipment,
-            equipment_part=equipment_part,
-            inspection_item=inspection_item,
-            inspection_date=inspection_date,
-            tenant=tenant,
-            limit=limit
-        ))
-    finally:
-        loop.close()
 
 
 from fastapi import FastAPI

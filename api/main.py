@@ -32,6 +32,7 @@
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -154,14 +155,12 @@ class FileUploadResponse(BaseModel):
     uploaded_at: str
 
 
-from typing import Optional
-
 class FileInfo(BaseModel):
     """ファイル情報"""
     file_id: str
     filename: str
     path: str
-    size: int
+    size: Optional[int] = None
     tenant: str
     uploaded_at: str
     processed: bool = False
