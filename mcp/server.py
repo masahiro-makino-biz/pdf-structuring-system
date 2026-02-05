@@ -176,76 +176,95 @@ async def search_documents(
 
 @mcp.tool()
 async def visualize_data(
-    data: str,
+    equipment: str = "",
     measurement_key: str = "",
     chart_type: str = "line",
-    title: str = ""
+    title: str = "",
+    tenant: str = "default"
 ) -> str:
     """
-    検索結果から年次推移グラフを生成する
+    機器の測定値の年次推移グラフを生成する
+
+    【重要】このツールは内部で検索を行うため、search_documentsの結果を渡す必要はありません。
 
     Args:
-        data: search_documentsの結果（JSON文字列）
+        equipment: 機器名（例: "高圧ポンプユニットA-01"）
         measurement_key: 表示する測定値のキー（例: "摩耗量"）
         chart_type: グラフの種類 "line"(折れ線) or "bar"(棒)
         title: グラフタイトル（省略時は自動生成）
+        tenant: テナントID
 
     Returns:
         グラフ画像（Base64）を含むJSON文字列
     """
-    print(f"[visualize_data] 開始: data長さ={len(data)}, key={measurement_key}")
-    print(f"[visualize_data] data内容: {data[:500]}")
+    print(f"[visualize_data] 開始: equipment={equipment}, key={measurement_key}")
 
-    # JSON文字列をパース
-    try:
-        parsed_data = json.loads(data)
-    except json.JSONDecodeError:
+    if not equipment:
         return json.dumps({
             "success": False,
-            "error": "データのパースに失敗しました",
+            "error": "機器名を指定してください",
             "chart_image": ""
         }, ensure_ascii=False)
 
-    # resultsリストを取得
-    # AIが直接リストを渡す場合と、辞書を渡す場合の両方に対応
-    if isinstance(parsed_data, list):
-        results = parsed_data
-    else:
-        results = parsed_data.get("results", [])
+    if not measurement_key:
+        return json.dumps({
+            "success": False,
+            "error": "測定値キー（例: 摩耗量）を指定してください",
+            "chart_image": ""
+        }, ensure_ascii=False)
+
+    # 内部で検索を実行（全年度のデータを取得するため年指定なし）
+    init_mongo()
+    all_pages = await db.pages.find({
+        "tenant": tenant,
+        "page_number": {"$ne": None}
+    }).to_list(500)
+
+    # 機器名でフィルタリング
+    results = []
+    for page in all_pages:
+        if "error" in page:
+            continue
+        page_data = page.get("data", {})
+        equipment_value = page_data.get("機器") or ""
+        if equipment.lower() in equipment_value.lower():
+            results.append({
+                "file_id": page.get("file_id"),
+                "filename": page.get("filename"),
+                "matched_records": [{
+                    "page_number": page.get("page_number"),
+                    "data": page_data
+                }]
+            })
+
+    print(f"[visualize_data] 検索結果: {len(results)}件")
+
     if not results:
         return json.dumps({
             "success": False,
-            "error": "検索結果がありません",
-            "chart_image": ""
-        }, ensure_ascii=False)
-
-    # measurement_keyが指定されていない場合、最初の測定値キーを使用
-    if not measurement_key:
-        for file_result in results:
-            for record in file_result.get("matched_records", []):
-                measurements = record.get("data", {}).get("測定値", {})
-                if measurements:
-                    measurement_key = list(measurements.keys())[0]
-                    break
-            if measurement_key:
-                break
-
-    if not measurement_key:
-        return json.dumps({
-            "success": False,
-            "error": "測定値が見つかりません",
+            "error": f"'{equipment}'のデータが見つかりません",
             "chart_image": ""
         }, ensure_ascii=False)
 
     # グラフ生成
     print(f"[visualize_data] グラフ生成開始: key={measurement_key}")
-    result = chart_utils.create_yearly_trend(
-        results=results,
-        measurement_key=measurement_key,
-        chart_type=chart_type,
-        title=title
-    )
-    print(f"[visualize_data] グラフ生成完了: success={result.get('success')}")
+    try:
+        result = chart_utils.create_yearly_trend(
+            results=results,
+            measurement_key=measurement_key,
+            chart_type=chart_type,
+            title=title
+        )
+        print(f"[visualize_data] グラフ生成完了: success={result.get('success')}, path={result.get('chart_path')}")
+    except Exception as e:
+        print(f"[visualize_data] グラフ生成エラー: {e}")
+        import traceback
+        traceback.print_exc()
+        return json.dumps({
+            "success": False,
+            "error": f"グラフ生成エラー: {str(e)}",
+            "chart_image": ""
+        }, ensure_ascii=False)
 
     return json.dumps(result, ensure_ascii=False)
 

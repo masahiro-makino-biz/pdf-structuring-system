@@ -45,6 +45,34 @@ def figure_to_base64(fig) -> str:
     return img_base64
 
 
+def figure_to_file(fig, filename: str = "chart.png") -> str:
+    """
+    matplotlibのfigureをファイルに保存
+
+    【なぜファイルに保存か】
+    - Base64はAIの出力で切り詰められることがある
+    - ファイルパスを返せばUIで直接読み込める
+
+    Returns:
+        保存したファイルのパス
+    """
+    import os
+    import uuid
+
+    # /data/charts ディレクトリに保存
+    charts_dir = "/data/charts"
+    os.makedirs(charts_dir, exist_ok=True)
+
+    # ユニークなファイル名を生成
+    unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+    filepath = os.path.join(charts_dir, unique_name)
+
+    fig.savefig(filepath, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+    return filepath
+
+
 def extract_yearly_data(results: list, measurement_key: str) -> dict:
     """
     検索結果から年ごとのデータを抽出
@@ -57,10 +85,15 @@ def extract_yearly_data(results: list, measurement_key: str) -> dict:
         {年: [測定値リスト], ...} の辞書
     """
     yearly_data = {}
+    print(f"[extract_yearly_data] results数: {len(results)}, key: {measurement_key}")
 
     for file_result in results:
-        for record in file_result.get("matched_records", []):
+        print(f"[extract_yearly_data] file_result keys: {file_result.keys()}")
+        matched_records = file_result.get("matched_records", [])
+        print(f"[extract_yearly_data] matched_records数: {len(matched_records)}")
+        for record in matched_records:
             data = record.get("data", {})
+            print(f"[extract_yearly_data] data keys: {data.keys()}")
 
             # 点検年月日から年を抽出
             date_str = data.get("点検年月日", "")
@@ -138,6 +171,8 @@ def create_yearly_trend(
 
     # グラフ作成
     fig, ax = plt.subplots(figsize=(10, 6))
+    fig.patch.set_facecolor('white')  # 背景を白に
+    ax.set_facecolor('white')
 
     if chart_type == "bar":
         ax.bar(years, values, color='steelblue')
@@ -157,12 +192,12 @@ def create_yearly_trend(
     # グリッド追加
     ax.grid(True, linestyle='--', alpha=0.7)
 
-    # Base64変換
-    chart_image = figure_to_base64(fig)
+    # ファイルに保存（AIがBase64を切り詰める問題を回避）
+    chart_path = figure_to_file(fig, f"{measurement_key}_trend.png")
 
     return {
         "success": True,
-        "chart_image": chart_image,
+        "chart_path": chart_path,
         "chart_title": chart_title,
         "data_points": sum(len(v) for v in yearly_data.values())
     }

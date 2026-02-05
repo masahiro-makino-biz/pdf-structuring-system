@@ -8,6 +8,7 @@ import os
 import uuid
 import re
 import base64
+from pathlib import Path
 
 # =============================================================================
 # 設定
@@ -247,7 +248,9 @@ def extract_base64_images(text: str) -> tuple[str, list[str]]:
     Returns:
         (画像を除いたテキスト, Base64画像のリスト)
     """
-    # Base64画像パターンを検索（data:image/png;base64,... または 生のBase64）
+    # Base64画像パターンを検索
+    # パターン0: マークダウン画像 ![alt](data:image/...;base64,XXXX)
+    pattern0 = r'!\[([^\]]*)\]\(data:image/[^;]+;base64,([A-Za-z0-9+/=]+)\)'
     # パターン1: data:image/...;base64,XXXX 形式
     pattern1 = r'data:image/[^;]+;base64,([A-Za-z0-9+/=]+)'
     # パターン2: 長いBase64文字列（100文字以上のアルファベット+数字+/+=）
@@ -256,12 +259,20 @@ def extract_base64_images(text: str) -> tuple[str, list[str]]:
     images = []
     cleaned_text = text
 
-    # パターン1で検索
-    matches1 = re.findall(pattern1, text)
-    for match in matches1:
-        images.append(match)
-        # テキストからdata:image...部分を削除
-        cleaned_text = re.sub(r'data:image/[^;]+;base64,' + re.escape(match), '[グラフ画像]', cleaned_text)
+    # パターン0で検索（マークダウン画像形式）
+    matches0 = re.findall(pattern0, text)
+    for alt_text, base64_data in matches0:
+        images.append(base64_data)
+        # マークダウン画像全体を削除
+        cleaned_text = re.sub(r'!\[[^\]]*\]\(data:image/[^;]+;base64,[A-Za-z0-9+/=]+\)', '', cleaned_text)
+
+    # パターン1で検索（パターン0で見つからなかった場合）
+    if not images:
+        matches1 = re.findall(pattern1, text)
+        for match in matches1:
+            images.append(match)
+            # テキストからdata:image...部分を削除
+            cleaned_text = re.sub(r'data:image/[^;]+;base64,' + re.escape(match), '[グラフ画像]', cleaned_text)
 
     # パターン2で検索（パターン1で見つからなかった場合）
     if not images:
@@ -290,9 +301,57 @@ def show_base64_images(images: list[str], key_prefix: str = ""):
     """
     for i, img_base64 in enumerate(images):
         try:
+            # Base64パディングを修正（長さが4の倍数になるように）
+            padding_needed = 4 - (len(img_base64) % 4)
+            if padding_needed != 4:
+                img_base64 += "=" * padding_needed
+
             # Base64をデコードして画像として表示
             img_bytes = base64.b64decode(img_base64)
-            st.image(img_bytes, caption=f"生成されたグラフ", use_container_width=True)
+            st.image(img_bytes, caption="生成されたグラフ", use_container_width=True)
+        except Exception as e:
+            st.error(f"画像の表示に失敗しました: {e}")
+
+
+def extract_chart_paths(text: str) -> tuple[str, list[str]]:
+    """
+    テキストからグラフ画像のパスを抽出する
+
+    【なぜ必要か】
+    AIがBase64を切り詰める問題を回避するため、グラフは/data/chartsに保存される。
+    AIの回答からパスを抽出して画像を表示する。
+
+    Args:
+        text: AIの回答テキスト
+
+    Returns:
+        (パスを除いたテキスト, 画像パスのリスト)
+    """
+    # /data/charts/xxx.png 形式のパスを検索（日本語ファイル名対応）
+    pattern = r'/data/charts/[^\s\)\"\']+\.png'
+
+    paths = re.findall(pattern, text)
+    cleaned_text = text
+
+    for path in paths:
+        cleaned_text = cleaned_text.replace(path, '')
+
+    return cleaned_text, paths
+
+
+def show_chart_images(paths: list[str]):
+    """
+    ファイルパスから画像を表示する
+
+    Args:
+        paths: 画像ファイルパスのリスト
+    """
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                st.image(path, caption="生成されたグラフ", use_container_width=True)
+            else:
+                st.warning(f"画像ファイルが見つかりません: {path}")
         except Exception as e:
             st.error(f"画像の表示に失敗しました: {e}")
 
@@ -361,10 +420,17 @@ def user_page():
     for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             content = message["content"]
-            # アシスタントの回答はBase64画像を抽出して表示
+            # アシスタントの回答は画像を抽出して表示
             if message["role"] == "assistant":
-                cleaned_content, chart_images = extract_base64_images(content)
+                # グラフ画像パスを抽出
+                cleaned_content, chart_paths = extract_chart_paths(content)
+                # Base64画像も抽出（後方互換性）
+                cleaned_content, chart_images = extract_base64_images(cleaned_content)
                 st.markdown(cleaned_content)
+                # ファイルパスのグラフ画像
+                if chart_paths:
+                    show_chart_images(chart_paths)
+                # Base64のグラフ画像
                 if chart_images:
                     show_base64_images(chart_images, key_prefix=f"history_chart_{i}_")
             else:
@@ -401,11 +467,17 @@ def user_page():
                         if result.get("search_performed"):
                             st.caption("ドキュメント検索を実行しました")
 
-                        # Base64画像を抽出して表示
-                        cleaned_answer, chart_images = extract_base64_images(answer)
+                        # グラフ画像パスを抽出して表示
+                        cleaned_answer, chart_paths = extract_chart_paths(answer)
+                        # Base64画像も抽出（後方互換性）
+                        cleaned_answer, chart_images = extract_base64_images(cleaned_answer)
                         st.markdown(cleaned_answer)
 
-                        # グラフ画像があれば表示
+                        # ファイルパスのグラフ画像があれば表示
+                        if chart_paths:
+                            show_chart_images(chart_paths)
+
+                        # Base64のグラフ画像があれば表示（後方互換性）
                         if chart_images:
                             show_base64_images(chart_images, key_prefix="new_chart_")
 
