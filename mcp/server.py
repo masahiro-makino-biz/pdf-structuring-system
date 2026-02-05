@@ -1,23 +1,24 @@
 # =============================================================================
-# mcp/server.py - 検索サーバー
+# mcp/server.py - MCP検索サーバー
 # =============================================================================
 #
 # 【ファイル概要】
-# 点検記録の検索APIを提供するサーバー。
-# chat_service.py からHTTP経由で呼び出される。
+# 点検記録の検索機能をMCPツールとして提供するサーバー。
+# chat_service.py から MCPStreamableHTTPTool 経由で呼び出される。
 #
 # 【処理フロー】
-# 1. chat_service.py が POST /api/search にリクエスト
-# 2. _search_documents_async() でMongoDBを検索
-# 3. 検索条件に部分一致するレコードを返す
+# 1. chat_service.py が MCPStreamableHTTPTool で /mcp に接続
+# 2. AIが search_documents ツールを呼び出す
+# 3. MongoDBを検索して結果を返す
 #
 # 【依存関係】
-# - MongoDB : documents コレクションを検索（processed: true のみ）
+# - MongoDB : pages コレクションを検索
+# - FastMCP : MCPプロトコルでツールを提供
 # - FastAPI : HTTPエンドポイント提供
-# - FastMCP : 将来的にClaudeから直接呼び出す用（現在は未使用）
 #
 # =============================================================================
 
+import json
 import os
 from fastmcp import FastMCP
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -25,6 +26,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 
+# MCPサーバーを作成
 mcp = FastMCP("pdf-tools")
 
 mongo_client: AsyncIOMotorClient = None
@@ -45,38 +47,37 @@ def init_mongo():
         db = mongo_client.pdf_system
 
 
-async def _search_documents_async(
+# =============================================================================
+# MCPツール定義
+# =============================================================================
+@mcp.tool()
+async def search_documents(
     equipment: str = "",
     equipment_part: str = "",
     inspection_item: str = "",
     inspection_date: str = "",
     tenant: str = "default",
     limit: int = 5
-) -> dict:
+) -> str:
     """
-    MongoDBから構造化データを検索する内部関数
+    ミル機器の点検記録を検索する
 
     【処理フロー】
     1. 検索条件をリストに格納（空でないもののみ）
     2. MongoDBから全件取得
-    3. 3重ループ（ファイル→ページ→レコード）でマッチング
-    4. 部分一致でマッチしたレコードを収集
-    5. マッチ数が多い順にソートして返す
-
-    【なぜこの実装か】
-    - 全件取得→Pythonフィルタ方式はシンプルで理解しやすい
-    - データ量が増えたらMongoDBの$regexクエリに移行を検討
+    3. 部分一致でマッチしたレコードを収集
+    4. マッチ数が多い順にソートして返す
 
     Args:
-        equipment: 機器名
-        equipment_part: 機器部品名
-        inspection_item: 点検項目
-        inspection_date: 点検年月日
+        equipment: 機器名（例: '2号機微粉炭機D'）
+        equipment_part: 機器部品名（例: 'リンクサポート'）
+        inspection_item: 点検項目（例: '隙間計測'）
+        inspection_date: 点検年月日（例: '2024-01-15', '2024'）
         tenant: テナントID
         limit: 返す結果の最大数
 
     Returns:
-        {"success": bool, "results": [...], "total_documents": int}
+        検索結果のJSON文字列
     """
     init_mongo()
 
@@ -92,9 +93,13 @@ async def _search_documents_async(
         search_conditions.append(("点検年月日", inspection_date.strip()))
 
     if not search_conditions:
-        return {"success": False, "error": "検索条件を1つ以上指定してください", "results": []}
+        return json.dumps({
+            "success": False,
+            "error": "検索条件を1つ以上指定してください",
+            "results": []
+        }, ensure_ascii=False)
 
-    # pages コレクションから処理済みページを検索（page_number が null でないもの）
+    # pages コレクションから処理済みページを検索
     all_pages = await db.pages.find({
         "tenant": tenant,
         "page_number": {"$ne": None}
@@ -107,7 +112,6 @@ async def _search_documents_async(
         if "error" in page:
             continue
 
-        # data 直下にフィールドがある新構造に対応
         page_data = page.get("data", {})
 
         # 検索条件とのマッチをチェック
@@ -152,7 +156,7 @@ async def _search_documents_async(
     for r in results:
         r["matched_records"] = r["matched_records"][:5]
 
-    return {
+    result = {
         "success": True,
         "search_conditions": {
             "equipment": equipment,
@@ -164,15 +168,31 @@ async def _search_documents_async(
         "results": results[:limit]
     }
 
+    return json.dumps(result, ensure_ascii=False)
 
+
+# =============================================================================
+# FastAPI + MCPマウント
+# =============================================================================
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-app = FastAPI()
+# MCPのHTTPアプリを取得
+# 【なぜ先に取得するか】
+# FastMCPのlifespanをFastAPIに渡す必要があるため、先にアプリを作成
+mcp_http_app = mcp.http_app()
+
+# FastAPIアプリを作成（MCPのlifespanを渡す）
+# 【重要】lifespan を渡さないと "Task group is not initialized" エラーになる
+app = FastAPI(lifespan=mcp_http_app.lifespan)
+
+# MCPエンドポイントをマウント（HTTP）
+# 【注意】http_app() は既に /mcp パスを持っているので、ルート("") にマウント
+app.mount("", mcp_http_app)
 
 
 class SearchRequest(BaseModel):
-    """検索リクエスト"""
+    """検索リクエスト（後方互換用）"""
     equipment: str = ""
     equipment_part: str = ""
     inspection_item: str = ""
@@ -190,18 +210,13 @@ async def api_health():
 @app.post("/api/search")
 async def api_search(request: SearchRequest):
     """
-    検索APIエンドポイント
+    検索APIエンドポイント（後方互換用）
 
-    【処理フロー】
-    1. chat_service.py からHTTPリクエストを受信
-    2. _search_documents_async() で検索実行
-    3. 結果をJSONで返す
-
-    【なぜこの実装か】
-    - HTTP経由にすることで、サービス間の疎結合を維持
-    - 将来的に検索サーバーを別マシンに分離することも可能
+    【なぜ残しているか】
+    - 既存のHTTP呼び出しとの互換性を維持
+    - MCP非対応のクライアントからも利用可能
     """
-    result = await _search_documents_async(
+    result_json = await search_documents(
         equipment=request.equipment,
         equipment_part=request.equipment_part,
         inspection_item=request.inspection_item,
@@ -209,7 +224,7 @@ async def api_search(request: SearchRequest):
         tenant=request.tenant,
         limit=request.limit
     )
-    return result
+    return json.loads(result_json)
 
 
 if __name__ == "__main__":

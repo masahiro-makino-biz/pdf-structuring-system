@@ -48,19 +48,22 @@ services:
     environment:
       - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先
       - MCP_URL=http://mcp:8001  # MCPサーバーへの接続先（チャット検索用）
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # OpenAI APIキー（.envファイルから取得）
       # ---------------------------------------------------------------------------
-      # Agent Framework設定（OpenAI/Azure切り替え用）
+      # LiteLLM設定（全プロバイダー統一）
       # ---------------------------------------------------------------------------
-      - AI_PROVIDER=${AI_PROVIDER:-openai}  # AIプロバイダー（openai / azure）
-      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}  # Azure OpenAI エンドポイント
-      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-}  # Azure OpenAI デプロイメント名
+      # 【なぜLiteLLM経由か】
+      #   - OpenAI/Azure/Bedrock/Gemini を同じコードで呼び出せる
+      #   - プロバイダー切り替えは litellm/config.yaml で行う
+      - LITELLM_URL=http://litellm:4000  # LiteLLMプロキシURL
+      - LITELLM_MODEL=${LITELLM_MODEL:-gpt-4o}  # 使用するモデル名（litellm/config.yamlで定義）
       # ---------------------------------------------------------------------------
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # PDF解析用（直接OpenAI呼び出し）
       - PYTHONIOENCODING=utf-8  # 日本語ファイル名対応
       - LANG=C.UTF-8
     depends_on:
       - mongo  # MongoDBが起動してからAPIを起動
       - mcp  # MCPサーバーが起動してからAPIを起動
+      - litellm  # LiteLLMが起動してからAPIを起動
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -86,6 +89,39 @@ services:
       - API_URL=http://api:8000  # APIサーバーへの接続先
     depends_on:
       - api
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM - LLMプロキシサーバー
+  # ---------------------------------------------------------------------------
+  # 【役割】様々なLLMプロバイダー（OpenAI/Azure/Bedrock/Gemini）をOpenAI互換APIで提供
+  # 【なぜLiteLLMか】
+  #   - Agent Framework が Bedrock 非対応でも、LiteLLM経由なら使える
+  #   - プロバイダー切り替えがコード変更なしで可能
+  #   - 全てのLLMを同じコードで呼び出せる
+  # 【他の選択肢】
+  #   - 直接各プロバイダーのSDKを使う: プロバイダーごとにコードが必要
+  #   - Portkey: 商用サービス、より高機能だが有料
+  litellm:
+    build: ./api/litellm
+    container_name: pdf-litellm
+    ports:
+      - "4000:4000"  # http://localhost:4000 でアクセス可能
+    volumes:
+      - ./api/litellm:/app  # 設定ファイル変更を即反映
+    environment:
+      # OpenAI
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Azure OpenAI（使用時はコメント解除）
+      # - AZURE_API_KEY=${AZURE_API_KEY:-}
+      # - AZURE_API_BASE=${AZURE_API_BASE:-}
+      # - AZURE_API_VERSION=${AZURE_API_VERSION:-2024-02-15-preview}
+      # AWS Bedrock（使用時はコメント解除）
+      # - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      # - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      # - AWS_REGION_NAME=${AWS_REGION:-us-east-1}
+      # Google Gemini（使用時はコメント解除）
+      # - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------

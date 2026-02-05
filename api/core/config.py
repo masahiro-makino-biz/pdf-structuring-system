@@ -20,7 +20,6 @@
 # =============================================================================
 
 from functools import lru_cache
-from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -77,64 +76,34 @@ class Settings(BaseSettings):
     )
 
     # -------------------------------------------------------------------------
-    # AI設定
+    # LiteLLM設定（全プロバイダー統一）
     # -------------------------------------------------------------------------
-    ai_provider: Literal["openai", "azure", "bedrock"] = Field(
-        default="openai",
-        description="AIプロバイダー（openai, azure, bedrock）"
+    # 【なぜLiteLLMを使うか】
+    # - OpenAI/Azure/Bedrock/Gemini を同じコードで呼び出せる
+    # - Agent Framework が Bedrock 非対応でも、LiteLLM経由なら使える
+    # - プロバイダー切り替えは litellm/config.yaml で行う
+    litellm_url: str = Field(
+        default="http://litellm:4000",
+        description="LiteLLMプロキシURL"
     )
+    litellm_model: str = Field(
+        default="gpt-4o",
+        description="使用するモデル名（litellm/config.yamlで定義したmodel_name）"
+    )
+
+    # -------------------------------------------------------------------------
+    # OpenAI設定（PDF解析用）
+    # -------------------------------------------------------------------------
+    # 【なぜ残すか】
+    # - PDF解析（画像→構造化データ）は直接OpenAI呼び出しが必要
+    # - LiteLLMはチャット用、これは解析用
     openai_api_key: str = Field(
         default="",
-        description="OpenAI APIキー"
+        description="OpenAI APIキー（PDF解析用）"
     )
     openai_model: str = Field(
         default="gpt-4o",
-        description="使用するOpenAIモデル"
-    )
-    openai_chat_model_id: str = Field(
-        default="gpt-4o",
-        description="チャット用モデルID（Agent Framework用）"
-    )
-    openai_timeout: float = Field(
-        default=60.0,
-        description="OpenAI APIタイムアウト（秒）"
-    )
-    openai_max_retries: int = Field(
-        default=3,
-        description="OpenAI APIリトライ回数"
-    )
-
-    # Azure OpenAI設定
-    azure_openai_endpoint: str = Field(
-        default="",
-        description="Azure OpenAI エンドポイント"
-    )
-    azure_openai_deployment: str = Field(
-        default="",
-        description="Azure OpenAI デプロイメント名"
-    )
-
-    # -------------------------------------------------------------------------
-    # AWS Bedrock設定
-    # -------------------------------------------------------------------------
-    # 【なぜBedrock設定を分離したか】
-    # - AWS認証情報はOpenAI/Azureとは別の体系
-    # - リージョンやモデルIDもAWS固有のフォーマット
-    aws_region: str = Field(
-        default="us-east-1",
-        description="AWSリージョン（Claudeが利用可能なリージョン）"
-    )
-    aws_access_key_id: str = Field(
-        default="",
-        description="AWSアクセスキーID"
-    )
-    aws_secret_access_key: str = Field(
-        default="",
-        description="AWSシークレットアクセスキー"
-    )
-    bedrock_model_id: str = Field(
-        default="anthropic.claude-3-5-sonnet-20241022-v2:0",
-        description="BedrockモデルID（通常のClaude IDとは異なる形式）"
+        description="PDF解析に使用するOpenAIモデル"
     )
 
     # -------------------------------------------------------------------------

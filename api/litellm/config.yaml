@@ -1,0 +1,111 @@
+# =============================================================================
+# litellm/config.yaml - LiteLLMプロキシ設定
+# =============================================================================
+#
+# 【このファイルの役割】
+# LiteLLMプロキシで使用するモデルを定義。
+# 全てのモデルがOpenAI互換APIとして提供される。
+#
+# 【なぜLiteLLMを使うか】
+# - OpenAI/Azure/Bedrock/Gemini を同じコードで呼び出せる
+# - Agent Framework が Bedrock 非対応でも、LiteLLM経由なら使える
+# - プロバイダー切り替えがコード変更なしで可能
+#
+# 【使い方】
+# 1. 使いたいモデルの設定をコメント解除
+# 2. 環境変数（APIキー等）を.envに設定
+# 3. docker-compose up で起動
+#
+# =============================================================================
+
+model_list:
+  # ---------------------------------------------------------------------------
+  # OpenAI
+  # ---------------------------------------------------------------------------
+  # 【必要な環境変数】OPENAI_API_KEY
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ---------------------------------------------------------------------------
+  # Azure OpenAI
+  # ---------------------------------------------------------------------------
+  # 【必要な環境変数】AZURE_API_KEY, AZURE_API_BASE, AZURE_API_VERSION
+  # 【コメント解除して使用】
+  # - model_name: azure-gpt-4o
+  #   litellm_params:
+  #     model: azure/gpt-4o
+  #     api_key: os.environ/AZURE_API_KEY
+  #     api_base: os.environ/AZURE_API_BASE
+  #     api_version: os.environ/AZURE_API_VERSION
+
+  # ---------------------------------------------------------------------------
+  # AWS Bedrock (Claude)
+  # ---------------------------------------------------------------------------
+  # 【必要な環境変数】AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION_NAME
+  # 【コメント解除して使用】
+  # - model_name: claude-3-sonnet
+  #   litellm_params:
+  #     model: bedrock/anthropic.claude-3-sonnet-20240229-v1:0
+  #     aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+  #     aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+  #     aws_region_name: os.environ/AWS_REGION_NAME
+
+  # - model_name: claude-3-5-sonnet
+  #   litellm_params:
+  #     model: bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+  #     aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+  #     aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+  #     aws_region_name: os.environ/AWS_REGION_NAME
+
+  # ---------------------------------------------------------------------------
+  # Google Gemini
+  # ---------------------------------------------------------------------------
+  # 【必要な環境変数】GEMINI_API_KEY
+  # 【コメント解除して使用】
+  # - model_name: gemini-pro
+  #   litellm_params:
+  #     model: gemini/gemini-1.5-pro
+  #     api_key: os.environ/GEMINI_API_KEY
+
+  # - model_name: gemini-flash
+  #   litellm_params:
+  #     model: gemini/gemini-1.5-flash
+  #     api_key: os.environ/GEMINI_API_KEY
+
+  # ---------------------------------------------------------------------------
+  # Anthropic (直接)
+  # ---------------------------------------------------------------------------
+  # 【必要な環境変数】ANTHROPIC_API_KEY
+  # 【コメント解除して使用】
+  # - model_name: claude-direct
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-4-20250514
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+# =============================================================================
+# 一般設定
+# =============================================================================
+litellm_settings:
+  # ログ設定
+  set_verbose: false
+
+  # タイムアウト（秒）
+  request_timeout: 120
+
+  # リトライ設定
+  num_retries: 3
+
+  # フォールバック設定（オプション）
+  # 最初のモデルが失敗したら次のモデルを試す
+  # fallbacks:
+  #   - model_name: gpt-4o
+  #     fallback_models:
+  #       - claude-3-sonnet
+  #       - gemini-pro

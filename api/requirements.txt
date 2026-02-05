@@ -70,31 +70,21 @@ Pillow>=10.0.0
 # AI連携
 # ---------------------------------------------------------------------------
 # 【openai】OpenAI APIクライアント
-# 【なぜ必要か】GPT-4oで画像から構造化データを抽出
+# 【なぜ必要か】GPT-4oで画像から構造化データを抽出（PDF解析用）
 openai>=1.0.0
-
-# 【anthropic[bedrock]】Anthropic SDK + AWS Bedrock対応
-# 【なぜ必要か】AWS Bedrock経由でClaude APIを呼び出すため
-# 【他の選択肢】
-#   - boto3 + 直接Bedrock呼び出し: 低レベルで実装が複雑
-#   - agent-framework: Bedrock非対応（2025年5月時点）
-anthropic[bedrock]>=0.40.0
 
 # ---------------------------------------------------------------------------
 # Microsoft Agent Framework
 # ---------------------------------------------------------------------------
 # 【agent-framework】AIエージェント構築フレームワーク
 # 【なぜ必要か】
-#   - Function Callingの定義が簡潔になる（デコレータで定義）
-#   - OpenAI/Azure OpenAIを切り替え可能
-#   - 複数エージェントの連携が容易
+#   - MCPStreamableHTTPToolでMCPサーバーに接続可能
+#   - ChatAgentでAIエージェントを簡潔に構築
+# 【LiteLLMとの組み合わせ】
+#   - Agent Framework は Bedrock/Gemini 非対応だが、LiteLLM経由なら使える
+#   - LiteLLMがOpenAI互換APIを提供するため、OpenAIChatClientで全プロバイダー対応
 # 【他の選択肢】
 #   - LangChain: より高機能だが複雑。今回はシンプルなAgent Frameworkを選択
-#   - 直接OpenAI SDK: 現状の実装。Agent Frameworkはこれをラップ
 # 【注意】バージョンを固定しないとpipが全バージョンを試して時間がかかる
-agent-framework==1.0.0b260116
-
-# 【azure-identity】Azureの認証ライブラリ
-# 【なぜ必要か】Azure OpenAIを使用する際の認証（APIキー以外にも対応）
-# 【注意】Azure使用時のみ必要だが、将来の切り替えに備えてインストール
-azure-identity>=1.15.0
+# 【MCP対応】1.0.0b260130以降でMCPStreamableHTTPToolが利用可能
+agent-framework>=1.0.0b260130
