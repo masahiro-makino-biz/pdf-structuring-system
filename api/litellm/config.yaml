@@ -97,7 +97,8 @@ litellm_settings:
   set_verbose: false
 
   # タイムアウト（秒）
-  request_timeout: 120
+  # visualize_dataは検索→グラフ生成で複数ツール呼び出しがあるため長めに設定
+  request_timeout: 300
 
   # リトライ設定
   num_retries: 3

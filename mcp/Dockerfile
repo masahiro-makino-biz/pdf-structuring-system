@@ -28,9 +28,15 @@ WORKDIR /app
 #
 # 【rm -rf /var/lib/apt/lists/*】
 # aptのキャッシュを削除してコンテナサイズを削減
+# 【fonts-ipafont-gothic】日本語フォント
+# matplotlibでグラフに日本語を表示するために必要
+# 【fontconfig】fc-cacheコマンドを提供（フォントキャッシュ更新用）
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     poppler-utils \
+    fonts-ipafont-gothic \
+    fontconfig \
+    && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -6,6 +6,8 @@ import streamlit as st
 import requests
 import os
 import uuid
+import re
+import base64
 
 # =============================================================================
 # 設定
@@ -230,6 +232,71 @@ def admin_page():
 # =============================================================================
 
 
+def extract_base64_images(text: str) -> tuple[str, list[str]]:
+    """
+    テキストからBase64画像を抽出する
+
+    【なぜ必要か】
+    AIがvisualize_dataツールで生成したグラフはBase64形式で返される。
+    st.markdown()ではBase64画像を直接表示できないため、
+    抽出してst.image()で表示する必要がある。
+
+    Args:
+        text: AIの回答テキスト
+
+    Returns:
+        (画像を除いたテキスト, Base64画像のリスト)
+    """
+    # Base64画像パターンを検索（data:image/png;base64,... または 生のBase64）
+    # パターン1: data:image/...;base64,XXXX 形式
+    pattern1 = r'data:image/[^;]+;base64,([A-Za-z0-9+/=]+)'
+    # パターン2: 長いBase64文字列（100文字以上のアルファベット+数字+/+=）
+    pattern2 = r'(?<![A-Za-z0-9+/=])([A-Za-z0-9+/=]{100,})(?![A-Za-z0-9+/=])'
+
+    images = []
+    cleaned_text = text
+
+    # パターン1で検索
+    matches1 = re.findall(pattern1, text)
+    for match in matches1:
+        images.append(match)
+        # テキストからdata:image...部分を削除
+        cleaned_text = re.sub(r'data:image/[^;]+;base64,' + re.escape(match), '[グラフ画像]', cleaned_text)
+
+    # パターン2で検索（パターン1で見つからなかった場合）
+    if not images:
+        matches2 = re.findall(pattern2, text)
+        for match in matches2:
+            # Base64として有効かチェック
+            try:
+                decoded = base64.b64decode(match)
+                # PNG/JPEGのマジックバイトをチェック
+                if decoded[:8] == b'\x89PNG\r\n\x1a\n' or decoded[:2] == b'\xff\xd8':
+                    images.append(match)
+                    cleaned_text = cleaned_text.replace(match, '[グラフ画像]')
+            except Exception:
+                pass
+
+    return cleaned_text, images
+
+
+def show_base64_images(images: list[str], key_prefix: str = ""):
+    """
+    Base64画像をStreamlitで表示する
+
+    Args:
+        images: Base64エンコードされた画像のリスト
+        key_prefix: ユニークキー用のプレフィックス
+    """
+    for i, img_base64 in enumerate(images):
+        try:
+            # Base64をデコードして画像として表示
+            img_bytes = base64.b64decode(img_base64)
+            st.image(img_bytes, caption=f"生成されたグラフ", use_container_width=True)
+        except Exception as e:
+            st.error(f"画像の表示に失敗しました: {e}")
+
+
 def show_reference_pages(ref_pages: list, key_prefix: str = ""):
     """
     参照元ページを折りたたみ式で表示するヘルパー関数
@@ -293,7 +360,15 @@ def user_page():
     # 履歴表示（検索結果の画像も含む）
     for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+            content = message["content"]
+            # アシスタントの回答はBase64画像を抽出して表示
+            if message["role"] == "assistant":
+                cleaned_content, chart_images = extract_base64_images(content)
+                st.markdown(cleaned_content)
+                if chart_images:
+                    show_base64_images(chart_images, key_prefix=f"history_chart_{i}_")
+            else:
+                st.markdown(content)
             # アシスタントの回答に参照ページがあれば表示
             if message["role"] == "assistant" and message.get("ref_pages"):
                 show_reference_pages(message["ref_pages"], key_prefix=f"history_{i}_")
@@ -314,7 +389,7 @@ def user_page():
                             "tenant": tenant_id,
                             "session_id": st.session_state.session_id
                         },
-                        timeout=60,
+                        timeout=180,  # グラフ生成で複数ツール呼び出しがあるため長めに設定
                     )
 
                     if response.status_code == 200:
@@ -326,7 +401,13 @@ def user_page():
                         if result.get("search_performed"):
                             st.caption("ドキュメント検索を実行しました")
 
-                        st.markdown(answer)
+                        # Base64画像を抽出して表示
+                        cleaned_answer, chart_images = extract_base64_images(answer)
+                        st.markdown(cleaned_answer)
+
+                        # グラフ画像があれば表示
+                        if chart_images:
+                            show_base64_images(chart_images, key_prefix="new_chart_")
 
                         # 検索結果に画像がある場合、収集して表示
                         if result.get("search_results") and result["search_results"].get("results"):
