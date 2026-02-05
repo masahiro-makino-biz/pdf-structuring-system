@@ -222,6 +222,7 @@ async def visualize_data(
 
     # 機器名でフィルタリング
     results = []
+    reference_images = []  # 参照PDF画像のパスを収集
     for page in all_pages:
         if "error" in page:
             continue
@@ -236,6 +237,9 @@ async def visualize_data(
                     "data": page_data
                 }]
             })
+            # 参照画像パスを収集
+            if page.get("image_path"):
+                reference_images.append(page.get("image_path"))
 
     print(f"[visualize_data] 検索結果: {len(results)}件")
 
@@ -256,6 +260,8 @@ async def visualize_data(
             title=title
         )
         print(f"[visualize_data] グラフ生成完了: success={result.get('success')}, path={result.get('chart_path')}")
+        # 参照画像パスを追加
+        result["reference_images"] = reference_images
     except Exception as e:
         print(f"[visualize_data] グラフ生成エラー: {e}")
         import traceback

@@ -34,8 +34,23 @@ from core.logging import get_logger
 
 logger = get_logger(__name__)
 settings = get_settings()
-OPENAI_API_KEY = settings.openai_api_key
 DATA_DIR = Path(settings.data_dir)
+
+
+def get_openai_client():
+    """
+    LiteLLM経由のOpenAIクライアントを取得
+
+    【なぜLiteLLM経由か】
+    - チャットと同じ設定でPDF処理も行える
+    - OpenAI/Azure/Bedrockなど、プロバイダー切り替えが一箇所で可能
+    - litellm/config.yaml で設定したモデルを使用
+    """
+    logger.info(f"LiteLLMクライアント作成: url={settings.litellm_url}")
+    return OpenAI(
+        api_key="sk-litellm",  # LiteLLMでは任意の値でOK
+        base_url=settings.litellm_url
+    )
 
 
 def image_to_base64(image: Image.Image, format: str = "PNG") -> str:
@@ -204,9 +219,6 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
     Returns:
         {"success": bool, "data": {...}}
     """
-    if not OPENAI_API_KEY:
-        return {"success": False, "error": "OPENAI_API_KEYが設定されていません"}
-
     image_file = Path(image_path)
     if not image_file.exists():
         return {"success": False, "error": f"画像が見つかりません: {image_path}"}
@@ -220,7 +232,7 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
     except Exception as e:
         return {"success": False, "error": f"画像読み込みエラー: {str(e)}"}
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
 
     system_prompt = (
         "あなたは発電所の点検記録画像から、指定のJSONスキーマに厳密準拠したJSONを出力する専門家です。\n"
@@ -248,7 +260,7 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=settings.litellm_model,
             messages=[
                 {
                     "role": "system",

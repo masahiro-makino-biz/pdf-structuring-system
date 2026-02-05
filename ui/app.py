@@ -339,6 +339,59 @@ def extract_chart_paths(text: str) -> tuple[str, list[str]]:
     return cleaned_text, paths
 
 
+def extract_reference_paths(text: str) -> tuple[str, list[str]]:
+    """
+    テキストから参照PDF画像のパスを抽出する
+
+    【なぜ必要か】
+    検索結果に含まれるPDFページ画像を表示するため。
+    AIの回答からパスを抽出して画像を表示する。
+
+    Args:
+        text: AIの回答テキスト
+
+    Returns:
+        (パスを除いたテキスト, 画像パスのリスト)
+    """
+    # /data/default/images/xxx/page_001.png 形式のパスを検索
+    pattern = r'/data/[^\s\)\"\']+/images/[^\s\)\"\']+\.png'
+
+    paths = re.findall(pattern, text)
+    cleaned_text = text
+
+    # パスを含む行を削除（参照: /data/... の行）
+    for path in paths:
+        cleaned_text = re.sub(rf'参照[：:]?\s*{re.escape(path)}', '', cleaned_text)
+        cleaned_text = cleaned_text.replace(path, '')
+
+    return cleaned_text, paths
+
+
+def show_reference_images(paths: list[str]):
+    """
+    参照PDF画像を折りたたみ式・タブ切り替えで表示する
+
+    Args:
+        paths: 画像ファイルパスのリスト
+    """
+    if not paths:
+        return
+
+    with st.expander(f"📄 参照元ページ（{len(paths)}件）", expanded=False):
+        # タブでページを切り替え表示
+        tab_labels = [f"ページ {i+1}" for i in range(len(paths))]
+        tabs = st.tabs(tab_labels)
+        for tab, path in zip(tabs, paths):
+            with tab:
+                try:
+                    if os.path.exists(path):
+                        st.image(path)
+                    else:
+                        st.warning(f"画像が見つかりません")
+                except Exception as e:
+                    st.error(f"表示エラー: {e}")
+
+
 def show_chart_images(paths: list[str]):
     """
     ファイルパスから画像を表示する
@@ -424,6 +477,8 @@ def user_page():
             if message["role"] == "assistant":
                 # グラフ画像パスを抽出
                 cleaned_content, chart_paths = extract_chart_paths(content)
+                # 参照PDF画像パスを抽出
+                cleaned_content, ref_paths = extract_reference_paths(cleaned_content)
                 # Base64画像も抽出（後方互換性）
                 cleaned_content, chart_images = extract_base64_images(cleaned_content)
                 st.markdown(cleaned_content)
@@ -433,6 +488,9 @@ def user_page():
                 # Base64のグラフ画像
                 if chart_images:
                     show_base64_images(chart_images, key_prefix=f"history_chart_{i}_")
+                # 参照PDF画像
+                if ref_paths:
+                    show_reference_images(ref_paths)
             else:
                 st.markdown(content)
             # アシスタントの回答に参照ページがあれば表示
@@ -469,6 +527,8 @@ def user_page():
 
                         # グラフ画像パスを抽出して表示
                         cleaned_answer, chart_paths = extract_chart_paths(answer)
+                        # 参照PDF画像パスを抽出
+                        cleaned_answer, ref_paths = extract_reference_paths(cleaned_answer)
                         # Base64画像も抽出（後方互換性）
                         cleaned_answer, chart_images = extract_base64_images(cleaned_answer)
                         st.markdown(cleaned_answer)
@@ -480,6 +540,10 @@ def user_page():
                         # Base64のグラフ画像があれば表示（後方互換性）
                         if chart_images:
                             show_base64_images(chart_images, key_prefix="new_chart_")
+
+                        # 参照PDF画像があれば表示
+                        if ref_paths:
+                            show_reference_images(ref_paths)
 
                         # 検索結果に画像がある場合、収集して表示
                         if result.get("search_results") and result["search_results"].get("results"):
