@@ -7,8 +7,6 @@ import requests
 import os
 import uuid
 import re
-import base64
-from pathlib import Path
 
 # =============================================================================
 # 設定
@@ -233,99 +231,13 @@ def admin_page():
 # =============================================================================
 
 
-def extract_base64_images(text: str) -> tuple[str, list[str]]:
-    """
-    テキストからBase64画像を抽出する
-
-    【なぜ必要か】
-    AIがvisualize_dataツールで生成したグラフはBase64形式で返される。
-    st.markdown()ではBase64画像を直接表示できないため、
-    抽出してst.image()で表示する必要がある。
-
-    Args:
-        text: AIの回答テキスト
-
-    Returns:
-        (画像を除いたテキスト, Base64画像のリスト)
-    """
-    # Base64画像パターンを検索
-    # パターン0: マークダウン画像 ![alt](data:image/...;base64,XXXX)
-    pattern0 = r'!\[([^\]]*)\]\(data:image/[^;]+;base64,([A-Za-z0-9+/=]+)\)'
-    # パターン1: data:image/...;base64,XXXX 形式
-    pattern1 = r'data:image/[^;]+;base64,([A-Za-z0-9+/=]+)'
-    # パターン2: 長いBase64文字列（100文字以上のアルファベット+数字+/+=）
-    pattern2 = r'(?<![A-Za-z0-9+/=])([A-Za-z0-9+/=]{100,})(?![A-Za-z0-9+/=])'
-
-    images = []
-    cleaned_text = text
-
-    # パターン0で検索（マークダウン画像形式）
-    matches0 = re.findall(pattern0, text)
-    for alt_text, base64_data in matches0:
-        images.append(base64_data)
-        # マークダウン画像全体を削除
-        cleaned_text = re.sub(r'!\[[^\]]*\]\(data:image/[^;]+;base64,[A-Za-z0-9+/=]+\)', '', cleaned_text)
-
-    # パターン1で検索（パターン0で見つからなかった場合）
-    if not images:
-        matches1 = re.findall(pattern1, text)
-        for match in matches1:
-            images.append(match)
-            # テキストからdata:image...部分を削除
-            cleaned_text = re.sub(r'data:image/[^;]+;base64,' + re.escape(match), '[グラフ画像]', cleaned_text)
-
-    # パターン2で検索（パターン1で見つからなかった場合）
-    if not images:
-        matches2 = re.findall(pattern2, text)
-        for match in matches2:
-            # Base64として有効かチェック
-            try:
-                decoded = base64.b64decode(match)
-                # PNG/JPEGのマジックバイトをチェック
-                if decoded[:8] == b'\x89PNG\r\n\x1a\n' or decoded[:2] == b'\xff\xd8':
-                    images.append(match)
-                    cleaned_text = cleaned_text.replace(match, '[グラフ画像]')
-            except Exception:
-                pass
-
-    return cleaned_text, images
-
-
-def show_base64_images(images: list[str], key_prefix: str = ""):
-    """
-    Base64画像をStreamlitで表示する
-
-    Args:
-        images: Base64エンコードされた画像のリスト
-        key_prefix: ユニークキー用のプレフィックス
-    """
-    for i, img_base64 in enumerate(images):
-        try:
-            # Base64パディングを修正（長さが4の倍数になるように）
-            padding_needed = 4 - (len(img_base64) % 4)
-            if padding_needed != 4:
-                img_base64 += "=" * padding_needed
-
-            # Base64をデコードして画像として表示
-            img_bytes = base64.b64decode(img_base64)
-            st.image(img_bytes, caption="生成されたグラフ", use_container_width=True)
-        except Exception as e:
-            st.error(f"画像の表示に失敗しました: {e}")
-
-
 def extract_chart_paths(text: str) -> tuple[str, list[str]]:
     """
     テキストからグラフ画像のパスを抽出する
 
     【なぜ必要か】
-    AIがBase64を切り詰める問題を回避するため、グラフは/data/chartsに保存される。
-    AIの回答からパスを抽出して画像を表示する。
-
-    Args:
-        text: AIの回答テキスト
-
-    Returns:
-        (パスを除いたテキスト, 画像パスのリスト)
+    グラフは/data/chartsにファイル保存される。
+    AIの回答からパスを抽出してst.image()で表示する。
     """
     # /data/charts/xxx.png 形式のパスを検索（日本語ファイル名対応）
     pattern = r'/data/charts/[^\s\)\"\']+\.png'
@@ -409,31 +321,6 @@ def show_chart_images(paths: list[str]):
             st.error(f"画像の表示に失敗しました: {e}")
 
 
-def show_reference_pages(ref_pages: list, key_prefix: str = ""):
-    """
-    参照元ページを折りたたみ式で表示するヘルパー関数
-
-    【なぜヘルパー関数にしたか】
-    - 新規回答時と履歴表示時で同じ表示ロジックを使うため
-    - コードの重複を避けて保守しやすくする
-
-    Args:
-        ref_pages: 参照ページ情報のリスト
-        key_prefix: Streamlitのkey重複を避けるためのプレフィックス
-    """
-    if not ref_pages:
-        return
-
-    # expanderで折りたたみ式にする（タップで展開）
-    with st.expander(f"📄 参照元ページ（{len(ref_pages)}件）", expanded=False):
-        # タブで切り替え表示
-        tab_labels = [f"{p['filename']} P{p['page_number']}" for p in ref_pages]
-        tabs = st.tabs(tab_labels)
-        for tab, page_info in zip(tabs, ref_pages):
-            with tab:
-                st.image(page_info["image_path"], caption=page_info.get("title", ""))
-
-
 def user_page():
     """ユーザー用ページ：構造化データに対してチャットで質問"""
     st.title("ドキュメントチャット")
@@ -475,27 +362,15 @@ def user_page():
             content = message["content"]
             # アシスタントの回答は画像を抽出して表示
             if message["role"] == "assistant":
-                # グラフ画像パスを抽出
                 cleaned_content, chart_paths = extract_chart_paths(content)
-                # 参照PDF画像パスを抽出
                 cleaned_content, ref_paths = extract_reference_paths(cleaned_content)
-                # Base64画像も抽出（後方互換性）
-                cleaned_content, chart_images = extract_base64_images(cleaned_content)
                 st.markdown(cleaned_content)
-                # ファイルパスのグラフ画像
                 if chart_paths:
                     show_chart_images(chart_paths)
-                # Base64のグラフ画像
-                if chart_images:
-                    show_base64_images(chart_images, key_prefix=f"history_chart_{i}_")
-                # 参照PDF画像
                 if ref_paths:
                     show_reference_images(ref_paths)
             else:
                 st.markdown(content)
-            # アシスタントの回答に参照ページがあれば表示
-            if message["role"] == "assistant" and message.get("ref_pages"):
-                show_reference_pages(message["ref_pages"], key_prefix=f"history_{i}_")
 
     if prompt := st.chat_input("質問を入力してください（例：〇〇について教えて）"):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -519,66 +394,29 @@ def user_page():
                     if response.status_code == 200:
                         result = response.json()
                         answer = result.get("response", "回答を取得できませんでした")
-                        ref_pages = []  # 参照ページを保存用に初期化
 
-                        # 検索が行われたかどうかを表示
-                        if result.get("search_performed"):
-                            st.caption("ドキュメント検索を実行しました")
-
-                        # グラフ画像パスを抽出して表示
                         cleaned_answer, chart_paths = extract_chart_paths(answer)
-                        # 参照PDF画像パスを抽出
                         cleaned_answer, ref_paths = extract_reference_paths(cleaned_answer)
-                        # Base64画像も抽出（後方互換性）
-                        cleaned_answer, chart_images = extract_base64_images(cleaned_answer)
                         st.markdown(cleaned_answer)
 
-                        # ファイルパスのグラフ画像があれば表示
                         if chart_paths:
                             show_chart_images(chart_paths)
-
-                        # Base64のグラフ画像があれば表示（後方互換性）
-                        if chart_images:
-                            show_base64_images(chart_images, key_prefix="new_chart_")
-
-                        # 参照PDF画像があれば表示
                         if ref_paths:
                             show_reference_images(ref_paths)
-
-                        # 検索結果に画像がある場合、収集して表示
-                        if result.get("search_results") and result["search_results"].get("results"):
-                            for doc in result["search_results"]["results"]:
-                                for record in doc.get("matched_records", []):
-                                    if record.get("image_path"):
-                                        ref_pages.append({
-                                            "filename": doc["filename"],
-                                            "page_number": record["page_number"],
-                                            "table_index": record.get("table_index"),
-                                            "image_path": record["image_path"],
-                                            "title": record.get("inspection_item", "")
-                                        })
-
-                            # 折りたたみ式で画像表示
-                            show_reference_pages(ref_pages, key_prefix="new_")
                     else:
                         answer = f"エラーが発生しました (status: {response.status_code})"
-                        ref_pages = []
                         st.error(answer)
 
                 except requests.exceptions.Timeout:
                     answer = "タイムアウトしました。もう一度お試しください。"
-                    ref_pages = []
                     st.error(answer)
                 except requests.exceptions.RequestException as e:
                     answer = f"通信エラー: {e}"
-                    ref_pages = []
                     st.error(answer)
 
-        # 回答と参照ページを履歴に保存
         st.session_state.messages.append({
             "role": "assistant",
             "content": answer,
-            "ref_pages": ref_pages  # 参照ページも保存（次の会話でも表示される）
         })
 
 

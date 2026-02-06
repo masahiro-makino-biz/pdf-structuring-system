@@ -182,3 +182,6 @@
 - 読んでいないコードへの変更
 - セキュリティ脆弱性を含む
 - 要求されていない「改善」を含む
+
+gitのcommitコメントに以下は含めないで
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>

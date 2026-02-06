@@ -22,11 +22,8 @@ import json
 import os
 from fastmcp import FastMCP
 from motor.motor_asyncio import AsyncIOMotorClient
-
-# matplotlibを事前に読み込み（初回呼び出しの遅延を減らす）
 import chart_utils
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 
 # MCPサーバーを作成
@@ -102,30 +99,36 @@ async def search_documents(
             "results": []
         }, ensure_ascii=False)
 
-    # pages コレクションから処理済みページを検索
-    all_pages = await db.pages.find({
+    # MongoDB側でフィルタ（$or で部分一致検索）
+    or_conditions = []
+    for field_name, search_value in search_conditions:
+        or_conditions.append({
+            f"data.{field_name}": {"$regex": search_value, "$options": "i"}
+        })
+
+    query = {
         "tenant": tenant,
-        "page_number": {"$ne": None}
-    }).to_list(500)
+        "page_number": {"$ne": None},
+        "error": {"$exists": False},
+        "$or": or_conditions
+    }
+
+    # MongoDB側でフィルタ済みなので、制限なしで取得
+    matched_pages = await db.pages.find(query).to_list(None)
 
     # ファイルごとにマッチしたページをグループ化
     file_results = {}
 
-    for page in all_pages:
-        if "error" in page:
-            continue
-
+    for page in matched_pages:
         page_data = page.get("data", {})
 
-        # 検索条件とのマッチをチェック
+        # マッチしたフィールドを特定（スコア計算用）
         match_count = 0
         matched_fields = []
 
         for field_name, search_value in search_conditions:
-            search_lower = search_value.lower()
             stored_value = (page_data.get(field_name) or "").lower()
-
-            if search_lower in stored_value:
+            if search_value.lower() in stored_value:
                 match_count += 1
                 matched_fields.append(field_name)
 
@@ -177,90 +180,89 @@ async def search_documents(
 @mcp.tool()
 async def visualize_data(
     equipment: str = "",
-    measurement_key: str = "",
-    chart_type: str = "line",
-    title: str = "",
+    equipment_part: str = "",
     tenant: str = "default"
 ) -> str:
     """
-    機器の測定値の年次推移グラフを生成する
+    機器または機器部品の測定値を計測箇所ごとに散布図で可視化する
+
+    【グラフ仕様】
+    - 可視化単位: 計測箇所ごとに1グラフ
+    - X軸: 年度（複数年のデータを表示）
+    - Y軸: 測定値
+    - 凡例: 測定値キー
+    - 基準値: 赤い水平線
 
     【重要】このツールは内部で検索を行うため、search_documentsの結果を渡す必要はありません。
 
     Args:
-        equipment: 機器名（例: "高圧ポンプユニットA-01"）
-        measurement_key: 表示する測定値のキー（例: "摩耗量"）
-        chart_type: グラフの種類 "line"(折れ線) or "bar"(棒)
-        title: グラフタイトル（省略時は自動生成）
+        equipment: 機器名（例: "高圧ポンプ"）- 部分一致
+        equipment_part: 機器部品名（例: "インペラシャフト"）- 部分一致、省略可
         tenant: テナントID
 
     Returns:
-        グラフ画像（Base64）を含むJSON文字列
+        計測箇所ごとのグラフ画像パスを含むJSON文字列
     """
-    print(f"[visualize_data] 開始: equipment={equipment}, key={measurement_key}")
+    print(f"[visualize_data] 開始: equipment={equipment}, part={equipment_part}")
 
-    if not equipment:
+    if not equipment and not equipment_part:
         return json.dumps({
             "success": False,
-            "error": "機器名を指定してください",
-            "chart_image": ""
+            "error": "機器名または機器部品名を指定してください",
+            "charts": []
         }, ensure_ascii=False)
 
-    if not measurement_key:
-        return json.dumps({
-            "success": False,
-            "error": "測定値キー（例: 摩耗量）を指定してください",
-            "chart_image": ""
-        }, ensure_ascii=False)
-
-    # 内部で検索を実行（全年度のデータを取得するため年指定なし）
+    # MongoDB側でフィルタして検索（効率的）
     init_mongo()
-    all_pages = await db.pages.find({
-        "tenant": tenant,
-        "page_number": {"$ne": None}
-    }).to_list(500)
 
-    # 機器名でフィルタリング
+    query = {
+        "tenant": tenant,
+        "page_number": {"$ne": None},
+        "error": {"$exists": False}  # エラーレコードを除外
+    }
+
+    # 機器名で絞り込み（部分一致、大文字小文字無視）
+    if equipment:
+        query["data.機器"] = {"$regex": equipment, "$options": "i"}
+
+    # 機器部品名で絞り込み（部分一致、大文字小文字無視）
+    if equipment_part:
+        query["data.機器部品"] = {"$regex": equipment_part, "$options": "i"}
+
+    # MongoDB側でフィルタ済みなので、制限なしで取得
+    matched_pages = await db.pages.find(query).to_list(None)
+
+    # 結果を整形
     results = []
-    reference_images = []  # 参照PDF画像のパスを収集
-    for page in all_pages:
-        if "error" in page:
-            continue
+    reference_images = []
+    for page in matched_pages:
         page_data = page.get("data", {})
-        equipment_value = page_data.get("機器") or ""
-        if equipment.lower() in equipment_value.lower():
-            results.append({
-                "file_id": page.get("file_id"),
-                "filename": page.get("filename"),
-                "matched_records": [{
-                    "page_number": page.get("page_number"),
-                    "data": page_data
-                }]
-            })
-            # 参照画像パスを収集
-            if page.get("image_path"):
-                reference_images.append(page.get("image_path"))
+        results.append({
+            "file_id": page.get("file_id"),
+            "filename": page.get("filename"),
+            "matched_records": [{
+                "page_number": page.get("page_number"),
+                "data": page_data
+            }]
+        })
+        if page.get("image_path"):
+            reference_images.append(page.get("image_path"))
 
     print(f"[visualize_data] 検索結果: {len(results)}件")
 
     if not results:
+        search_term = equipment or equipment_part
         return json.dumps({
             "success": False,
-            "error": f"'{equipment}'のデータが見つかりません",
-            "chart_image": ""
+            "error": f"'{search_term}'のデータが見つかりません",
+            "charts": []
         }, ensure_ascii=False)
 
-    # グラフ生成
-    print(f"[visualize_data] グラフ生成開始: key={measurement_key}")
+    # 計測箇所ごとにグラフ生成
+    print(f"[visualize_data] グラフ生成開始")
     try:
-        result = chart_utils.create_yearly_trend(
-            results=results,
-            measurement_key=measurement_key,
-            chart_type=chart_type,
-            title=title
-        )
-        print(f"[visualize_data] グラフ生成完了: success={result.get('success')}, path={result.get('chart_path')}")
-        # 参照画像パスを追加
+        result = chart_utils.create_charts_by_location(results)
+        print(f"[visualize_data] グラフ生成完了: {result.get('total_locations')}箇所")
         result["reference_images"] = reference_images
     except Exception as e:
         print(f"[visualize_data] グラフ生成エラー: {e}")
@@ -269,7 +271,7 @@ async def visualize_data(
         return json.dumps({
             "success": False,
             "error": f"グラフ生成エラー: {str(e)}",
-            "chart_image": ""
+            "charts": []
         }, ensure_ascii=False)
 
     return json.dumps(result, ensure_ascii=False)
@@ -307,7 +309,7 @@ class SearchRequest(BaseModel):
 @app.get("/api/health")
 async def api_health():
     """ヘルスチェック"""
-    return {"status": "ok", "openai_configured": bool(OPENAI_API_KEY)}
+    return {"status": "ok"}
 
 
 @app.post("/api/search")
