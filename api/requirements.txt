@@ -32,7 +32,7 @@ motor==3.6.0
 # ---------------------------------------------------------------------------
 # 【pydantic】データの型チェック・バリデーションを行う
 # 【なぜ必要か】APIで受け取るデータが正しい形式か自動チェック
-# 【注意】agent-frameworkが2.12以上を要求するため、バージョンを上げる
+# 【なぜ必要か】APIで受け取るデータが正しい形式か自動チェック
 pydantic>=2.12.0
 
 # 【pydantic-settings】環境変数から設定を読み込む
@@ -74,17 +74,20 @@ Pillow>=10.0.0
 openai>=1.0.0
 
 # ---------------------------------------------------------------------------
-# Microsoft Agent Framework
+# OpenAI Agents SDK
 # ---------------------------------------------------------------------------
-# 【agent-framework】AIエージェント構築フレームワーク
+# 【openai-agents】AIエージェント構築フレームワーク（OpenAI公式）
 # 【なぜ必要か】
-#   - MCPStreamableHTTPToolでMCPサーバーに接続可能
-#   - ChatAgentでAIエージェントを簡潔に構築
+#   - MCPServerStreamableHttpでMCPサーバーに安定接続
+#   - Agent + Runner でAIエージェントを簡潔に構築
 # 【LiteLLMとの組み合わせ】
-#   - Agent Framework は Bedrock/Gemini 非対応だが、LiteLLM経由なら使える
-#   - LiteLLMがOpenAI互換APIを提供するため、OpenAIChatClientで全プロバイダー対応
+#   - set_default_openai_client() でLiteLLMプロキシを向けるだけ
+#   - OpenAI互換APIを提供するLiteLLM経由で全プロバイダー対応
+# 【なぜMicrosoft Agent Frameworkから移行したか】
+#   - MCPStreamableHTTPToolにバグがあり、MongoDB MCP Serverとデッドロックする
+#   - tools/list_changed通知で load_tools() が再入実行されハングする問題
+#   - OpenAI Agents SDKはこの通知で再取得しない設計のため問題なし
 # 【他の選択肢】
-#   - LangChain: より高機能だが複雑。今回はシンプルなAgent Frameworkを選択
-# 【注意】バージョンを固定しないとpipが全バージョンを試して時間がかかる
-# 【MCP対応】1.0.0b260130以降でMCPStreamableHTTPToolが利用可能
-agent-framework>=1.0.0b260130
+#   - agent-framework (Microsoft): 上記のバグあり
+#   - LangChain: より高機能だが複雑。今回はシンプルなAgents SDKを選択
+openai-agents>=0.0.7

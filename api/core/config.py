@@ -68,7 +68,11 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     mcp_url: str = Field(
         default="http://mcp:8001",
-        description="MCPサーバーURL"
+        description="自作MCPサーバーURL（検索・可視化ツール）"
+    )
+    mongodb_mcp_url: str = Field(
+        default="http://mongodb-mcp:3100",
+        description="MongoDB公式MCPサーバーURL（find/aggregate等）"
     )
     mcp_timeout: float = Field(
         default=30.0,

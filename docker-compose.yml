@@ -24,6 +24,7 @@ services:
       - "27017:27017"  # ホストの27017番ポートとコンテナの27017番を接続
     volumes:
       - mongo_data:/data/db  # データを永続化（コンテナ削除してもデータは残る）
+      - ./mongo/init.js:/docker-entrypoint-initdb.d/init.js:ro  # 初期化スクリプト
     restart: unless-stopped  # エラーで停止しても自動再起動
 
   # ---------------------------------------------------------------------------
@@ -115,13 +116,35 @@ services:
       # Azure OpenAI
       - AZURE_API_KEY=${AZURE_API_KEY:-}
       - AZURE_API_BASE=${AZURE_API_BASE:-}
-      - AZURE_API_VERSION=${AZURE_API_VERSION:-2024-02-15-preview}
-      # AWS Bedrock（使用時はコメント解除）
-      # - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-      # - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-      # - AWS_REGION_NAME=${AWS_REGION:-us-east-1}
+      - AZURE_API_VERSION=${AZURE_API_VERSION:-2025-03-01-preview}
+      # AWS Bedrock（APIキー認証）
+      - AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK:-}
       # Google Gemini（使用時はコメント解除）
       # - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MongoDB MCP Server - MongoDB公式MCPサーバー
+  # ---------------------------------------------------------------------------
+  # 【役割】AIが直接MongoDBにクエリ（find/aggregate等）を実行できるツール
+  # 【なぜ追加するか】
+  #   - 自作MCPの search_documents は固定的な検索しかできない
+  #   - aggregate（集計・統計）による柔軟な分析が可能になる
+  #   - 自作MCPと併用し、精度を検証する
+  # 【セキュリティ】
+  #   - MDB_MCP_READ_ONLY=true でデータ変更を完全ブロック
+  #   - pages_default ビューでテナント分離（mongo/init.js で作成）
+  mongodb-mcp:
+    image: mongodb/mongodb-mcp-server:latest
+    container_name: pdf-mongodb-mcp
+    environment:
+      - MDB_MCP_CONNECTION_STRING=mongodb://mongo:27017/pdf_system
+      - MDB_MCP_READ_ONLY=true
+    command: ["--transport", "http", "--httpHost", "0.0.0.0", "--httpPort", "3100"]
+    ports:
+      - "3100:3100"
+    depends_on:
+      - mongo
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
