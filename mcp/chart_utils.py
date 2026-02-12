@@ -17,9 +17,11 @@ import os
 import re
 import uuid
 
+import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 def setup_japanese_font():
@@ -35,7 +37,7 @@ def figure_to_file(fig, filename: str = "chart.png") -> str:
     unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
     filepath = os.path.join(charts_dir, unique_name)
 
-    fig.savefig(filepath, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+    fig.savefig(filepath, format='png', dpi=200, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
     return filepath
@@ -147,7 +149,13 @@ def create_chart_for_location(
     reference_value: float = None
 ) -> dict:
     """
-    1つの計測箇所用のグラフを生成（複数年対応）
+    1つの計測箇所用のストリッププロットを生成（複数年対応）
+
+    【なぜstripplotか】
+    - 散布図と同じく個々のデータ点を表示できる
+    - X軸がカテゴリ（年度）の場合に自動でジッターしてくれる
+    - hueで測定値キーごとに色分け＋凡例が自動生成される
+    - matplotlibのscatterで手動実装していた処理が1行で済む
     """
     setup_japanese_font()
 
@@ -158,62 +166,52 @@ def create_chart_for_location(
             "chart_path": ""
         }
 
-    # キーごとに (年, 値) を収集
-    key_data = {}
-    all_years = set()
+    # data_pointsをDataFrameに変換
+    # 【なぜDataFrameか】
+    # seabornはpandasのDataFrame形式でデータを受け取る設計
+    # data_points = [{"year": 2024, "key": "摩耗量", "value": 0.18}, ...] の形式
+    df = pd.DataFrame(data_points)
 
-    for dp in data_points:
-        year = dp["year"]
-        key = dp["key"]
-        value = dp["value"]
-        all_years.add(year)
-
-        if key not in key_data:
-            key_data[key] = []
-        key_data[key].append((year, value))
+    # 年を文字列に変換（seabornがカテゴリ＝離散値として扱うため）
+    # 【注意】intのままだと連続値として扱われ、存在しない年も軸に表示されてしまう
+    df["year"] = df["year"].astype(str)
+    df = df.sort_values("year")
 
     # グラフ作成
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(8, 4))
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
 
-    # 色とマーカーの定義
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-    markers = ['o', 's', '^', 'D', 'v', 'p', 'h', '8', '*', 'X']
+    # seabornのstripplotで描画
+    # 【コード解説】
+    #   x="year"    : X軸に年度を配置（カテゴリ軸）
+    #   y="value"   : Y軸に測定値を配置
+    #   hue="key"   : 測定値キーごとに色を自動で変える（凡例も自動生成）
+    #   jitter=0.25 : 同じ年の点を左右にランダムにずらして重なりを防ぐ
+    #   size=2.5    : 点の大きさ
+    #   alpha=0.6   : 透明度（重なった点が見えるように）
+    sns.stripplot(
+        data=df,
+        x="year",
+        y="value",
+        hue="key",
+        jitter=0.25,
+        size=5,
+        alpha=0.6,
+        ax=ax,
+    )
 
-    total_points = 0
-
-    # キーごとにプロット
-    for i, (key, year_value_pairs) in enumerate(sorted(key_data.items())):
-        color = colors[i % len(colors)]
-        marker = markers[i % len(markers)]
-
-        years = [pair[0] for pair in year_value_pairs]
-        values = [pair[1] for pair in year_value_pairs]
-
-        # 同じ年に複数の値がある場合、少しずらす
-        jitter = (i - len(key_data) / 2) * 0.03
-        x_values = [y + jitter for y in years]
-
-        ax.scatter(
-            x_values, values,
-            c=color, marker=marker, s=80, alpha=0.7,
-            label=key, edgecolors='white', linewidths=0.5
-        )
-        total_points += len(values)
-
-    # 基準値の水平線
+    # 基準値の水平線（赤い破線）
     if reference_value is not None:
         ax.axhline(
             y=reference_value,
             color='red',
             linestyle='--',
             linewidth=2,
-            label=f'基準値: {reference_value}'
+            label=f'基準値: {reference_value}',
         )
 
-    # タイトル設定
+    # タイトル・ラベル設定
     title_parts = [p for p in [equipment, equipment_part, location] if p]
     chart_title = " / ".join(title_parts)
 
@@ -221,20 +219,18 @@ def create_chart_for_location(
     ax.set_xlabel("年度", fontsize=12)
     ax.set_ylabel("測定値", fontsize=12)
 
-    # X軸を年度で表示
-    if all_years:
-        years_sorted = sorted(all_years)
-        ax.set_xticks(years_sorted)
-        ax.set_xticklabels([str(y) for y in years_sorted])
-        ax.set_xlim(min(years_sorted) - 0.5, max(years_sorted) + 0.5)
+    # Y軸のみグリッド表示（データ点の読み取りやすさのため）
+    ax.grid(True, axis="y", alpha=0.3)
 
-    # 凡例（多い場合は外に配置）
-    if len(key_data) > 6:
-        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
-    else:
-        ax.legend(loc='upper right', fontsize=9)
+    # 凡例を右外に配置（データ点と重ならないように）
+    ax.legend(
+        title="凡例",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        fontsize=8,
+    )
 
-    ax.grid(True, linestyle='--', alpha=0.7)
+    plt.tight_layout()
 
     # ファイルに保存
     safe_location = re.sub(r'[^\w\-]', '_', location)
@@ -245,8 +241,8 @@ def create_chart_for_location(
         "chart_path": chart_path,
         "chart_title": chart_title,
         "location": location,
-        "data_points": total_points,
-        "reference_value": reference_value
+        "data_points": len(df),
+        "reference_value": reference_value,
     }
 
 

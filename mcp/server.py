@@ -55,12 +55,13 @@ async def visualize_data(data: str) -> str:
     Returns:
         計測箇所ごとのグラフ画像パスを含むJSON文字列
     """
-    print(f"[visualize_data] 開始: データ受信, 長さ={len(data)}")
+    print(f"[visualize_data] 開始: 長さ={len(data)}, 先頭200文字={data[:200]}", flush=True)
 
     # JSON文字列をパース
     try:
         documents = json.loads(data)
     except json.JSONDecodeError as e:
+        print(f"[visualize_data] JSONパースエラー: {e}", flush=True)
         return json.dumps({
             "success": False,
             "error": f"データのJSON解析エラー: {str(e)}",
@@ -68,7 +69,6 @@ async def visualize_data(data: str) -> str:
         }, ensure_ascii=False)
 
     if not isinstance(documents, list):
-        # 単一オブジェクトの場合は配列に変換
         documents = [documents]
 
     if not documents:
@@ -82,7 +82,14 @@ async def visualize_data(data: str) -> str:
     results = []
     reference_images = []
     for doc in documents:
+        # docがdictでない場合（AIが予期しない形式で渡した場合）のガード
+        if not isinstance(doc, dict):
+            print(f"[visualize_data] 警告: docがdictでない: type={type(doc).__name__}", flush=True)
+            continue
         doc_data = doc.get("data", {})
+        if not doc_data:
+            print(f"[visualize_data] 警告: dataフィールドが空: keys={list(doc.keys())}", flush=True)
+            continue
         results.append({
             "matched_records": [{
                 "data": doc_data
@@ -91,15 +98,22 @@ async def visualize_data(data: str) -> str:
         if doc.get("image_path"):
             reference_images.append(doc.get("image_path"))
 
-    print(f"[visualize_data] データ件数: {len(results)}件")
+    print(f"[visualize_data] 有効データ: {len(results)}件 / {len(documents)}件中", flush=True)
+
+    if not results:
+        return json.dumps({
+            "success": False,
+            "error": "有効なデータがありません（dataフィールドを持つドキュメントが必要）",
+            "charts": []
+        }, ensure_ascii=False)
 
     # 計測箇所ごとにグラフ生成
     try:
         result = chart_utils.create_charts_by_location(results)
-        print(f"[visualize_data] グラフ生成完了: {result.get('total_locations')}箇所")
+        print(f"[visualize_data] 完了: {json.dumps(result, ensure_ascii=False)[:300]}", flush=True)
         result["reference_images"] = reference_images
     except Exception as e:
-        print(f"[visualize_data] グラフ生成エラー: {e}")
+        print(f"[visualize_data] グラフ生成エラー: {e}", flush=True)
         import traceback
         traceback.print_exc()
         return json.dumps({

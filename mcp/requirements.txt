@@ -41,3 +41,22 @@ openai>=1.0.0
 #   - 年次推移グラフの生成
 #   - visualize_dataツールで使用
 matplotlib>=3.8.0
+
+# 【seaborn】統計グラフ描画ライブラリ
+# 【用途】
+#   - stripplot（ストリッププロット）で年次推移を可視化
+#   - matplotlibのラッパーで、少ないコードで綺麗なグラフが描ける
+# 【なぜseabornか】
+#   - stripplot がジッター（点のずらし）を自動処理してくれる
+#   - hue（色分け）でカテゴリ別の凡例が自動生成される
+#   - matplotlibで手動実装していた色・マーカー・凡例が不要になる
+# 【他の選択肢】
+#   - matplotlib単体: 手動実装が多く保守しにくい
+#   - plotly: インタラクティブだが、画像保存が目的なのでオーバースペック
+seaborn>=0.13.0
+
+# 【pandas】データ分析ライブラリ
+# 【用途】
+#   - seabornに渡すDataFrame（表形式データ）の作成
+#   - seabornはpandasのDataFrameを入力として期待する
+pandas>=2.0.0
