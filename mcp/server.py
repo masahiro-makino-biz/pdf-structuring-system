@@ -30,30 +30,38 @@ mcp = FastMCP("pdf-tools")
 # MCPツール定義
 # =============================================================================
 @mcp.tool()
-async def visualize_data(data: str) -> str:
+async def visualize_data(
+    data: str,
+    chart_type: str = "strip",
+    color: str = None,
+    year_from: int = None,
+    year_to: int = None,
+    min_value: float = None,
+    max_value: float = None,
+    show_reference: bool = True,
+    x_axis: str = None,
+) -> str:
     """
-    検索結果データから計測箇所ごとに散布図を生成する（グラフ生成専用）
+    検索結果データからグラフを生成する（グラフ生成専用）
 
     【使い方】
     1. 先にMongoDB MCPのfindで検索データを取得する
     2. その結果をdataパラメータにJSON文字列として渡す
-
-    【グラフ仕様】
-    - 可視化単位: 計測箇所ごとに1グラフ
-    - X軸: 年度（複数年のデータを表示）
-    - Y軸: 測定値
-    - 凡例: 測定値キー
-    - 基準値: 赤い水平線
+    3. 必要に応じてオプションパラメータでグラフをカスタマイズする
 
     Args:
         data: MongoDB findの検索結果（JSON文字列）
-              配列形式で、各要素は以下の構造:
-              { "data": { "機器": "...", "機器部品": "...", "計測箇所": "...",
-                          "点検年月日": "...", "測定値": {...}, "基準値": {...} },
-                "image_path": "..." }
+        chart_type: グラフの種類。"strip"(デフォルト), "scatter", "bar", "line"
+        color: データ点の色を統一する場合に指定（例: "red", "#FF6600"）。未指定なら測定値キーで自動色分け
+        year_from: この年度以降のデータだけ表示（例: 2024）
+        year_to: この年度以前のデータだけ表示（例: 2025）
+        min_value: この値以上のデータだけ表示（例: 0.5）
+        max_value: この値以下のデータだけ表示（例: 1.0）
+        show_reference: 基準値の赤い線を表示するか（デフォルト: True）
+        x_axis: X軸に使うカラム。"year"(年度) or "key"(点検項目)。未指定なら自動判定（複数年→年度、単年→点検項目）
 
     Returns:
-        計測箇所ごとのグラフ画像パスを含むJSON文字列
+        グラフHTMLファイルパスを含むJSON文字列
     """
     print(f"[visualize_data] 開始: 長さ={len(data)}, 先頭200文字={data[:200]}", flush=True)
 
@@ -107,9 +115,19 @@ async def visualize_data(data: str) -> str:
             "charts": []
         }, ensure_ascii=False)
 
-    # 計測箇所ごとにグラフ生成
+    # 計測箇所ごとにグラフ生成（オプションパラメータをそのまま透過）
     try:
-        result = chart_utils.create_charts_by_location(results)
+        result = chart_utils.create_charts_by_location(
+            results,
+            chart_type=chart_type,
+            color=color,
+            year_from=year_from,
+            year_to=year_to,
+            min_value=min_value,
+            max_value=max_value,
+            show_reference=show_reference,
+            x_axis=x_axis,
+        )
         print(f"[visualize_data] 完了: {json.dumps(result, ensure_ascii=False)[:300]}", flush=True)
         result["reference_images"] = reference_images
     except Exception as e:

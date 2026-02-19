@@ -243,7 +243,8 @@ def extract_chart_paths(text: str) -> tuple[str, list[str]]:
     AIの回答からパスを抽出してインタラクティブグラフとして表示する。
     """
     # /data/charts/xxx.html 形式のパスを検索
-    pattern = r'/data/charts/[^\s\)\"\']+\.html'
+    # AIがMarkdownリンク [text](url) で返す場合があるので ] ( [ も除外する
+    pattern = r'/data/charts/[^\s\)\(\]\[\"\']+\.html'
 
     paths = re.findall(pattern, text)
     cleaned_text = text
