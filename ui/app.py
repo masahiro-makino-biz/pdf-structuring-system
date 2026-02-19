@@ -181,7 +181,10 @@ def admin_page():
                                             st.caption(f"機器: {record_data.get('機器', 'N/A')} / 点検項目: {record_data.get('点検項目', 'N/A')}")
                                             image_path = record.get("image_path")
                                             if image_path:
-                                                st.image(image_path)
+                                                try:
+                                                    st.image(image_path)
+                                                except Exception:
+                                                    st.warning("画像が見つかりません")
                                             if "error" in record:
                                                 st.error(record["error"])
 
@@ -233,14 +236,14 @@ def admin_page():
 
 def extract_chart_paths(text: str) -> tuple[str, list[str]]:
     """
-    テキストからグラフ画像のパスを抽出する
+    テキストからグラフHTMLのパスを抽出する
 
     【なぜ必要か】
-    グラフは/data/chartsにファイル保存される。
-    AIの回答からパスを抽出してst.image()で表示する。
+    グラフは/data/chartsにHTMLファイルとして保存される。
+    AIの回答からパスを抽出してインタラクティブグラフとして表示する。
     """
-    # /data/charts/xxx.png 形式のパスを検索（日本語ファイル名対応）
-    pattern = r'/data/charts/[^\s\)\"\']+\.png'
+    # /data/charts/xxx.html 形式のパスを検索
+    pattern = r'/data/charts/[^\s\)\"\']+\.html'
 
     paths = re.findall(pattern, text)
     cleaned_text = text
@@ -306,19 +309,28 @@ def show_reference_images(paths: list[str]):
 
 def show_chart_images(paths: list[str]):
     """
-    ファイルパスから画像を表示する
+    PlotlyグラフのHTMLファイルをStreamlit内に埋め込み表示する
+
+    【なぜ st.components.v1.html() か】
+    - PlotlyのHTMLをページ内に埋め込んで、ホバー・ズーム等が動く
+    - st.image()はPNG/JPEG専用なのでHTMLは表示できない
+    - MCP側はHTMLファイルを作るだけ → フロント非依存
 
     Args:
-        paths: 画像ファイルパスのリスト
+        paths: HTMLファイルパスのリスト
     """
+    import streamlit.components.v1 as components
+
     for path in paths:
         try:
             if os.path.exists(path):
-                st.image(path, caption="生成されたグラフ", use_container_width=True)
+                with open(path, "r", encoding="utf-8") as f:
+                    html_content = f.read()
+                components.html(html_content, height=550, scrolling=False)
             else:
-                st.warning(f"画像ファイルが見つかりません: {path}")
+                st.warning(f"グラフファイルが見つかりません: {path}")
         except Exception as e:
-            st.error(f"画像の表示に失敗しました: {e}")
+            st.error(f"グラフの表示に失敗しました: {e}")
 
 
 def user_page():

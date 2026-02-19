@@ -10,6 +10,12 @@
 # - Y軸: 測定値
 # - 凡例: 測定値キー
 # - 基準値: 赤い水平線
+# - ホバー: カーソルを合わせるとx,y値と凡例が表示される
+#
+# 【フロント非依存設計】
+# - Plotlyで生成したグラフをHTMLファイルとして保存
+# - どのフロント（Streamlit, React, Vue, 素のHTML）でも表示可能
+# - MCP側はStreamlit等のフロントを一切知らない
 #
 # =============================================================================
 
@@ -18,27 +24,43 @@ import re
 import uuid
 
 import pandas as pd
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.express as px
+
+# 日本語フォント設定
+# Docker環境ではIPAGothicがインストール済み（Dockerfileでfonts-ipafont-gothicを指定）
+# Plotlyはフォントが見つからない場合、自動でデフォルトフォントにフォールバックする
+JAPANESE_FONT = "IPAGothic"
 
 
-def setup_japanese_font():
-    """日本語フォントを設定"""
-    plt.rcParams['font.family'] = ['IPAGothic', 'DejaVu Sans']
+def figure_to_file(fig, filename: str = "chart.html") -> str:
+    """
+    PlotlyのfigureをHTMLファイルに保存
 
+    【なぜHTMLか】
+    - ブラウザで直接開ける → フロントエンド非依存
+    - ホバー、ズーム、パン等のインタラクティブ機能がそのまま使える
+    - PNGだとカーソルを合わせて値を見る機能が使えない
 
-def figure_to_file(fig, filename: str = "chart.png") -> str:
-    """matplotlibのfigureをファイルに保存"""
+    【include_plotlyjs="cdn"について】
+    HTMLにplotly.jsを埋め込まず、CDN（インターネット上のライブラリ）を参照する。
+    ファイルサイズが約3MBから数KBに削減される。
+    オフライン環境の場合は include_plotlyjs=True にする（ファイルが大きくなる）。
+    """
     charts_dir = "/data/charts"
     os.makedirs(charts_dir, exist_ok=True)
 
     unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
     filepath = os.path.join(charts_dir, unique_name)
 
-    fig.savefig(filepath, format='png', dpi=200, bbox_inches='tight', facecolor='white')
-    plt.close(fig)
+    fig.write_html(
+        filepath,
+        include_plotlyjs="cdn",
+        full_html=True,
+        config={
+            "displayModeBar": True,
+            "displaylogo": False,
+        },
+    )
 
     return filepath
 
@@ -151,14 +173,17 @@ def create_chart_for_location(
     """
     1つの計測箇所用のストリッププロットを生成（複数年対応）
 
-    【なぜstripplotか】
-    - 散布図と同じく個々のデータ点を表示できる
-    - X軸がカテゴリ（年度）の場合に自動でジッターしてくれる
-    - hueで測定値キーごとに色分け＋凡例が自動生成される
-    - matplotlibのscatterで手動実装していた処理が1行で済む
-    """
-    setup_japanese_font()
+    【なぜplotly.express.stripか】
+    - seaborn.stripplotと同じ「ストリッププロット」をPlotlyで描画できる
+    - カーソルを合わせるとx値、y値、凡例カテゴリが自動表示される（ホバー機能）
+    - color パラメータで測定値キーごとに色分け（seabornのhue相当）
+    - HTMLファイルとして保存するため、フロントエンド非依存
 
+    【seabornとの対応関係】
+    - sns.stripplot(hue="key") → px.strip(color="key")
+    - ax.axhline() → fig.add_hline()
+    - fig.savefig(.png) → fig.write_html(.html)
+    """
     if not data_points:
         return {
             "success": False,
@@ -167,74 +192,69 @@ def create_chart_for_location(
         }
 
     # data_pointsをDataFrameに変換
-    # 【なぜDataFrameか】
-    # seabornはpandasのDataFrame形式でデータを受け取る設計
-    # data_points = [{"year": 2024, "key": "摩耗量", "value": 0.18}, ...] の形式
+    # plotly.expressもpandasのDataFrame形式でデータを受け取る設計（seabornと同じ）
     df = pd.DataFrame(data_points)
 
-    # 年を文字列に変換（seabornがカテゴリ＝離散値として扱うため）
-    # 【注意】intのままだと連続値として扱われ、存在しない年も軸に表示されてしまう
+    # 年を文字列に変換（カテゴリ＝離散値として扱うため）
+    # intのままだと連続値として扱われ、存在しない年も軸に表示されてしまう
     df["year"] = df["year"].astype(str)
     df = df.sort_values("year")
 
-    # グラフ作成
-    fig, ax = plt.subplots(figsize=(8, 4))
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
-    # seabornのstripplotで描画
-    # 【コード解説】
-    #   x="year"    : X軸に年度を配置（カテゴリ軸）
-    #   y="value"   : Y軸に測定値を配置
-    #   hue="key"   : 測定値キーごとに色を自動で変える（凡例も自動生成）
-    #   jitter=0.25 : 同じ年の点を左右にランダムにずらして重なりを防ぐ
-    #   size=2.5    : 点の大きさ
-    #   alpha=0.6   : 透明度（重なった点が見えるように）
-    sns.stripplot(
-        data=df,
+    # Plotly Expressでストリッププロットを生成
+    #   x="year"     : X軸に年度（カテゴリ軸）
+    #   y="value"    : Y軸に測定値
+    #   color="key"  : 測定値キーごとに色分け + 凡例自動生成
+    #   stripmode="overlay" : 同じカテゴリの点を重ねて表示
+    #   hover_data   : ホバー時に表示する情報のカスタマイズ
+    fig = px.strip(
+        df,
         x="year",
         y="value",
-        hue="key",
-        jitter=0.25,
-        size=5,
-        alpha=0.6,
-        ax=ax,
+        color="key",
+        stripmode="overlay",
+        hover_data={"key": True, "year": True, "value": ":.4f"},
+        labels={"year": "年度", "value": "測定値", "key": "凡例"},
+    )
+
+    # 点のスタイル調整
+    fig.update_traces(
+        marker=dict(size=8, opacity=0.7),
     )
 
     # 基準値の水平線（赤い破線）
     if reference_value is not None:
-        ax.axhline(
+        fig.add_hline(
             y=reference_value,
-            color='red',
-            linestyle='--',
-            linewidth=2,
-            label=f'基準値: {reference_value}',
+            line_dash="dash",
+            line_color="red",
+            line_width=2,
+            annotation_text=f"基準値: {reference_value}",
+            annotation_position="top left",
+            annotation_font_color="red",
         )
 
-    # タイトル・ラベル設定
+    # タイトル・ラベル・レイアウト設定
     title_parts = [p for p in [equipment, equipment_part, location] if p]
     chart_title = " / ".join(title_parts)
 
-    ax.set_title(chart_title, fontsize=14)
-    ax.set_xlabel("年度", fontsize=12)
-    ax.set_ylabel("測定値", fontsize=12)
-
-    # Y軸のみグリッド表示（データ点の読み取りやすさのため）
-    ax.grid(True, axis="y", alpha=0.3)
-
-    # 凡例を右外に配置（データ点と重ならないように）
-    ax.legend(
-        title="凡例",
-        bbox_to_anchor=(1.02, 1),
-        loc="upper left",
-        fontsize=8,
+    fig.update_layout(
+        title=dict(text=chart_title, font=dict(size=16, family=JAPANESE_FONT)),
+        xaxis_title=dict(text="年度", font=dict(size=13, family=JAPANESE_FONT)),
+        yaxis_title=dict(text="測定値", font=dict(size=13, family=JAPANESE_FONT)),
+        font=dict(family=JAPANESE_FONT),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        yaxis=dict(gridcolor="rgba(0,0,0,0.1)", gridwidth=1),
+        xaxis=dict(showgrid=False),
+        showlegend=False,
+        width=900,
+        height=500,
+        margin=dict(l=60, r=60, t=60, b=50),
     )
 
-    plt.tight_layout()
-
-    # ファイルに保存
+    # HTMLファイルに保存
     safe_location = re.sub(r'[^\w\-]', '_', location)
-    chart_path = figure_to_file(fig, f"{safe_location}.png")
+    chart_path = figure_to_file(fig, f"{safe_location}.html")
 
     return {
         "success": True,
