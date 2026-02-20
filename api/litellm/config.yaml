@@ -56,6 +56,18 @@ model_list:
       api_key: os.environ/AWS_BEARER_TOKEN_BEDROCK
       aws_region_name: ap-northeast-1
 
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: bedrock/jp.anthropic.claude-sonnet-4-6
+      api_key: os.environ/AWS_BEARER_TOKEN_BEDROCK
+      aws_region_name: ap-northeast-1
+
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: bedrock/jp.anthropic.claude-opus-4-6-v1
+      api_key: os.environ/AWS_BEARER_TOKEN_BEDROCK
+      aws_region_name: ap-northeast-1
+
   # ---------------------------------------------------------------------------
   # Google Gemini
   # ---------------------------------------------------------------------------
