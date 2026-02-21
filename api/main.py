@@ -582,6 +582,115 @@ async def delete_file(
 
 
 # =============================================================================
+# ダミーデータ生成エンドポイント
+# =============================================================================
+
+
+class DummyGenerateRequest(BaseModel):
+    """ダミーデータ生成リクエスト"""
+    source_file_id: str
+    tenant: str = "default"
+    start_year: int
+    end_year: int
+    repair_years: list[int] = []
+
+
+class DummyGenerateResponse(BaseModel):
+    """ダミーデータ生成レスポンス"""
+    success: bool
+    dummy_group_id: str | None = None
+    source_file_id: str | None = None
+    source_filename: str | None = None
+    total_records: int | None = None
+    year_range: str | None = None
+    repair_years: list[int] | None = None
+    error: str | None = None
+
+
+@app.post("/admin/dummy/generate", response_model=DummyGenerateResponse)
+async def generate_dummy_data_endpoint(request: DummyGenerateRequest):
+    """
+    既存データをテンプレートにダミーデータを生成
+
+    【処理フロー】
+    1. テンプレートとなるファイルの構造化データを取得
+    2. 年度範囲・修繕年に基づいて経年劣化データを計算
+    3. pages コレクションに保存
+
+    Args:
+        request: 生成パラメータ（テンプレートID、年度範囲、修繕年）
+
+    Returns:
+        生成結果（グループID、レコード数等）
+    """
+    from services.dummy_generator import generate_dummy_data
+
+    # バリデーション
+    if request.start_year >= request.end_year:
+        raise HTTPException(status_code=400, detail="終了年は開始年より後にしてください")
+    if request.end_year - request.start_year > 50:
+        raise HTTPException(status_code=400, detail="年度範囲は50年以内にしてください")
+
+    result = await generate_dummy_data(
+        db=db,
+        source_file_id=request.source_file_id,
+        tenant=request.tenant,
+        start_year=request.start_year,
+        end_year=request.end_year,
+        repair_years=request.repair_years,
+    )
+
+    if result["success"]:
+        return DummyGenerateResponse(
+            success=True,
+            dummy_group_id=result["dummy_group_id"],
+            source_file_id=result["source_file_id"],
+            source_filename=result["source_filename"],
+            total_records=result["total_records"],
+            year_range=f"{request.start_year}-{request.end_year}",
+            repair_years=request.repair_years,
+        )
+    else:
+        return DummyGenerateResponse(
+            success=False,
+            error=result.get("error"),
+        )
+
+
+@app.delete("/admin/dummy/{dummy_group_id}")
+async def delete_dummy_group(
+    dummy_group_id: str,
+    tenant: str = Query(default="default", description="テナントID"),
+):
+    """
+    ダミーデータグループを一括削除
+
+    【なぜ file_id ではなく dummy_group_id で削除するか】
+    ダミーデータは file_id = dummy_group_id で保存しているので
+    実質同じだが、意味を明確にするため専用エンドポイントにしている。
+
+    Args:
+        dummy_group_id: 削除するダミーデータのグループID
+        tenant: テナントID
+
+    Returns:
+        削除結果
+    """
+    result = await db.pages.delete_many({
+        "dummy_group_id": dummy_group_id,
+        "tenant": tenant,
+    })
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="ダミーデータが見つかりません")
+
+    return {
+        "success": True,
+        "deleted_count": result.deleted_count,
+    }
+
+
+# =============================================================================
 # チャットエンドポイント
 # =============================================================================
 

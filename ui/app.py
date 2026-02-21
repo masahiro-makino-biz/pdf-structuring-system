@@ -194,17 +194,27 @@ def admin_page():
 
                                 # 削除ボタン
                                 st.divider()
+                                is_dummy = f["filename"].startswith("【ダミー】")
+                                delete_label = "このダミーデータを削除" if is_dummy else "このファイルを削除"
                                 if st.button(
-                                    "このファイルを削除",
+                                    delete_label,
                                     key=f"delete_{f['file_id']}",
                                     type="secondary"
                                 ):
                                     try:
-                                        delete_response = requests.delete(
-                                            f"{API_URL}/admin/files/{f['file_id']}",
-                                            params={"tenant": tenant_id},
-                                            timeout=30,
-                                        )
+                                        if is_dummy:
+                                            # ダミーデータは dummy_group_id（= file_id）で一括削除
+                                            delete_response = requests.delete(
+                                                f"{API_URL}/admin/dummy/{f['file_id']}",
+                                                params={"tenant": tenant_id},
+                                                timeout=30,
+                                            )
+                                        else:
+                                            delete_response = requests.delete(
+                                                f"{API_URL}/admin/files/{f['file_id']}",
+                                                params={"tenant": tenant_id},
+                                                timeout=30,
+                                            )
                                         if delete_response.status_code == 200:
                                             st.success(f"{f['filename']} を削除しました")
                                             st.rerun()
@@ -224,6 +234,92 @@ def admin_page():
 
         else:
             st.error(f"データ取得に失敗しました (status: {response.status_code})")
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"API通信エラー: {e}")
+
+    # -------------------------------------------------------------------------
+    # ダミーデータ生成
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.header("ダミーデータ生成")
+    st.caption("既存データをテンプレートに、経年劣化をシミュレーションしたダミーデータを生成します")
+
+    try:
+        # テンプレート選択用に処理済みファイル一覧を取得
+        files_resp = requests.get(
+            f"{API_URL}/admin/files",
+            params={"tenant": tenant_id},
+            timeout=30,
+        )
+        if files_resp.status_code == 200:
+            all_files = files_resp.json()
+            # 処理済みかつダミーでないファイルだけ選択肢にする
+            template_files = [
+                f for f in all_files
+                if f.get("processed") and not f["filename"].startswith("【ダミー】")
+            ]
+
+            if template_files:
+                # テンプレート選択
+                template_options = {
+                    f["filename"]: f["file_id"]
+                    for f in template_files
+                }
+                selected_name = st.selectbox(
+                    "テンプレート選択",
+                    options=list(template_options.keys()),
+                    help="ダミーデータの元になるファイルを選択",
+                )
+                source_file_id = template_options[selected_name]
+
+                # 年度範囲
+                col1, col2 = st.columns(2)
+                with col1:
+                    start_year = st.number_input("開始年", min_value=2000, max_value=2050, value=2015)
+                with col2:
+                    end_year = st.number_input("終了年", min_value=2000, max_value=2050, value=2025)
+
+                # 修繕年の選択
+                year_range = list(range(int(start_year), int(end_year) + 1))
+                repair_years = st.multiselect(
+                    "修繕年（修繕があった年を選択）",
+                    options=year_range,
+                    help="修繕年には測定値が改善（初期値方向に回復）します",
+                )
+
+                # 生成ボタン
+                if st.button("ダミーデータを生成", type="primary"):
+                    with st.spinner("ダミーデータ生成中..."):
+                        try:
+                            gen_resp = requests.post(
+                                f"{API_URL}/admin/dummy/generate",
+                                json={
+                                    "source_file_id": source_file_id,
+                                    "tenant": tenant_id,
+                                    "start_year": int(start_year),
+                                    "end_year": int(end_year),
+                                    "repair_years": repair_years,
+                                },
+                                timeout=60,
+                            )
+                            if gen_resp.status_code == 200:
+                                gen_result = gen_resp.json()
+                                if gen_result.get("success"):
+                                    st.success(
+                                        f"生成完了: {gen_result['total_records']}レコード "
+                                        f"（{gen_result['year_range']}）"
+                                    )
+                                    st.rerun()
+                                else:
+                                    st.error(f"生成失敗: {gen_result.get('error')}")
+                            else:
+                                detail = gen_resp.json().get("detail", "不明なエラー")
+                                st.error(f"生成失敗: {detail}")
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"通信エラー: {e}")
+            else:
+                st.info("テンプレートとなる処理済みファイルがありません。先にPDFをアップロード・処理してください。")
 
     except requests.exceptions.RequestException as e:
         st.error(f"API通信エラー: {e}")
