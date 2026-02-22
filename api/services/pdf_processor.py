@@ -35,6 +35,7 @@ from core.logging import get_logger
 logger = get_logger(__name__)
 settings = get_settings()
 DATA_DIR = Path(settings.data_dir)
+FEWSHOT_DIR = DATA_DIR / "fewshot"
 
 
 def get_openai_client():
@@ -71,6 +72,78 @@ def image_to_base64(image: Image.Image, format: str = "PNG") -> str:
     buffer = BytesIO()
     image.save(buffer, format=format)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+# few-shot例題のキャッシュ（ページごとに毎回ファイルを読まないようにする）
+_fewshot_cache = {"loaded": False, "data": None}
+
+
+def load_fewshot_example():
+    """
+    /data/fewshot/ から例題（画像+正解JSON）を1件読み込む
+
+    【なぜこの関数が必要か】
+    - few-shot学習: GPT-4oに「正しい構造化の見本」を見せることで精度を上げる
+    - 画像＋正解JSONのペアをプロンプト内の会話例として挿入する
+
+    【ディレクトリ構造】
+    data/fewshot/
+      example.png     ← 例題の点検記録画像（.jpg も可）
+      example.json    ← その画像に対する正解JSON
+
+    【キャッシュ】
+    - 一度読み込んだ結果をメモリに保持し、2回目以降はディスクI/Oを省略
+    - PDFが複数ページある場合、ページごとにこの関数が呼ばれるため効果的
+
+    Returns:
+        {"image_base64": str, "json_text": str} または None（例題がない場合）
+    """
+    if _fewshot_cache["loaded"]:
+        return _fewshot_cache["data"]
+
+    def _cache_and_return(data):
+        _fewshot_cache["loaded"] = True
+        _fewshot_cache["data"] = data
+        return data
+
+    if not FEWSHOT_DIR.exists():
+        return _cache_and_return(None)
+
+    # 画像ファイルを探す（.png または .jpg/.jpeg）
+    image_path = None
+    for ext in ["*.png", "*.jpg", "*.jpeg"]:
+        found = list(FEWSHOT_DIR.glob(ext))
+        if found:
+            image_path = found[0]
+            break
+
+    # JSONファイルを探す
+    json_files = list(FEWSHOT_DIR.glob("*.json"))
+    json_path = json_files[0] if json_files else None
+
+    # 両方揃っていなければfew-shotなし
+    if not image_path or not json_path:
+        return _cache_and_return(None)
+
+    try:
+        # 画像をBase64に変換（extract_page_dataと同じリサイズ処理）
+        image = Image.open(image_path)
+        max_size = 2048
+        if max(image.size) > max_size:
+            image.thumbnail((max_size, max_size), Image.LANCZOS)
+        image_base64 = image_to_base64(image)
+
+        # 正解JSONを読み込み
+        json_text = json_path.read_text(encoding="utf-8")
+        # JSONとして有効か検証
+        json.loads(json_text)
+
+        logger.info(f"Few-shot例題を読み込み: image={image_path.name}, json={json_path.name}")
+        return _cache_and_return({"image_base64": image_base64, "json_text": json_text})
+
+    except Exception as e:
+        logger.warning(f"Few-shot例題の読み込みに失敗（無視して続行）: {e}")
+        return _cache_and_return(None)
 
 
 def pdf_to_images(pdf_path: str, tenant: str, file_id: str, dpi: int = 150) -> dict:
@@ -259,27 +332,48 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
     )
 
     try:
+        # メッセージ組み立て: system → [few-shot例題] → 本番画像
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # few-shot例題があれば挿入（user: 例題画像 → assistant: 正解JSON）
+        fewshot = load_fewshot_example()
+        if fewshot:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{fewshot['image_base64']}",
+                            "detail": "auto"
+                        },
+                    },
+                ],
+            })
+            messages.append({
+                "role": "assistant",
+                "content": fewshot["json_text"],
+            })
+
+        # 本番: 実際に構造化したい画像
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{base64_image}",
+                        "detail": "auto"
+                    },
+                },
+            ],
+        })
+
         response = client.chat.completions.create(
             model=settings.litellm_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{base64_image}",
-                                "detail": "auto"
-                            },
-                        },
-                    ],
-                }
-            ],
+            messages=messages,
             max_tokens=4000,
             response_format={
                 "type": "json_schema",
