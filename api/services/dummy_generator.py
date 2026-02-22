@@ -324,6 +324,14 @@ async def generate_dummy_data(
         references = template_data.get("基準値", {})
         original_date = template_data.get("点検年月日", "")
 
+        # テンプレートの年度を取得（この年は実データが存在するのでスキップする）
+        template_year = None
+        if original_date:
+            try:
+                template_year = int(original_date.split("-")[0].split("/")[0])
+            except (ValueError, IndexError):
+                pass
+
         if not measurements:
             continue
 
@@ -352,8 +360,10 @@ async def generate_dummy_data(
             )
             degradation_series[meas_key] = series
 
-        # 3. 年度ごとにドキュメントを作成
+        # 3. 年度ごとにドキュメントを作成（テンプレート年は実データがあるのでスキップ）
         for year in range(start_year, end_year + 1):
+            if year == template_year:
+                continue
             # 測定値を年度の値に差し替え
             new_measurements = {}
             for meas_key, series in degradation_series.items():
