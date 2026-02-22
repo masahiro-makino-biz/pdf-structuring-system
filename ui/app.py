@@ -314,7 +314,10 @@ def admin_page():
                                 else:
                                     st.error(f"生成失敗: {gen_result.get('error')}")
                             else:
-                                detail = gen_resp.json().get("detail", "不明なエラー")
+                                try:
+                                    detail = gen_resp.json().get("detail", "不明なエラー")
+                                except Exception:
+                                    detail = f"サーバーエラー (status: {gen_resp.status_code})"
                                 st.error(f"生成失敗: {detail}")
                         except requests.exceptions.RequestException as e:
                             st.error(f"通信エラー: {e}")

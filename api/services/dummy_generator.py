@@ -335,9 +335,9 @@ async def generate_dummy_data(
         if not measurements:
             continue
 
-        # 基準値を事前にパース
+        # 基準値を事前にパース（基準値がない場合は空dictとして扱う）
         parsed_references = {}
-        for ref_key, ref_val in references.items():
+        for ref_key, ref_val in (references or {}).items():
             parsed = parse_reference_value(ref_val)
             if parsed is not None:
                 parsed_references[ref_key] = parsed
