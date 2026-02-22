@@ -44,8 +44,8 @@ services:
     ports:
       - "8000:8000"  # http://localhost:8000 でアクセス可能
     volumes:
-      - ./api:/app  # ローカルのapiフォルダをコンテナ内の/appにマウント（コード変更即反映）
-      - ./data:/data  # 共有データフォルダ
+      - ./api:/app:Z  # ローカルのapiフォルダをコンテナ内の/appにマウント（コード変更即反映）
+      - ./data:/data:Z  # 共有データフォルダ
     environment:
       - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先
       - MCP_URL=http://mcp:8001  # MCPサーバーへの接続先（チャット検索用）
@@ -84,8 +84,8 @@ services:
     ports:
       - "8501:8501"  # http://localhost:8501 でアクセス可能
     volumes:
-      - ./ui:/app
-      - ./data:/data
+      - ./ui:/app:Z
+      - ./data:/data:Z
     environment:
       - API_URL=http://api:8000  # APIサーバーへの接続先
     depends_on:
@@ -109,7 +109,7 @@ services:
     ports:
       - "4000:4000"  # http://localhost:4000 でアクセス可能
     volumes:
-      - ./api/litellm:/app  # 設定ファイル変更を即反映
+      - ./api/litellm:/app:Z  # 設定ファイル変更を即反映
     environment:
       # OpenAI
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -161,8 +161,8 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      - ./mcp:/app
-      - ./data:/data
+      - ./mcp:/app:Z
+      - ./data:/data:Z
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # 環境変数から取得（.envファイルに設定）
       - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先（構造化データ保存用）
