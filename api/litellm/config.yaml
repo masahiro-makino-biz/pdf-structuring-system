@@ -96,6 +96,13 @@ model_list:
 # =============================================================================
 # 一般設定
 # =============================================================================
+# 【マスターキー】
+# APIサービスがLiteLLMプロキシに接続する際の認証キー。
+# chat_service.py の api_key と一致させる必要がある。
+# 環境変数 LITELLM_API_KEY で上書き可能（os.environ/で参照）。
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
 litellm_settings:
   # ログ設定
   set_verbose: false
