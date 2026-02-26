@@ -90,6 +90,10 @@ class Settings(BaseSettings):
         default="http://litellm:4000",
         description="LiteLLMプロキシURL"
     )
+    litellm_api_key: str = Field(
+        default="sk-litellm",
+        description="LiteLLMプロキシのAPIキー（マスターキー設定時に必要）"
+    )
     litellm_model: str = Field(
         default="gpt-4o",
         description="使用するモデル名（litellm/config.yamlで定義したmodel_name）"

@@ -45,14 +45,15 @@ MONGODB_MCP_URL = settings.mongodb_mcp_url
 # set_default_openai_client()で1回設定すれば、全てのAgentが自動的にこのクライアントを使う。
 #
 # 【api_keyについて】
-# LiteLLMプロキシでは任意の値でOK（プロキシ側で実際のAPIキー認証を行う）
+# LiteLLMプロキシのマスターキーを環境変数 LITELLM_API_KEY から取得。
+# マスターキー未設定のプロキシでは任意の値でOK（デフォルト: "sk-litellm"）。
 #
 # 【/v1 について】
 # AsyncOpenAIは base_url に /v1 が必要。LiteLLMは http://litellm:4000/v1 で提供。
 # /v1 を省略すると404エラーになるので注意。
 _openai_client = AsyncOpenAI(
     base_url=f"{settings.litellm_url}/v1",
-    api_key="sk-litellm",
+    api_key=settings.litellm_api_key,
 )
 set_default_openai_client(_openai_client)
 

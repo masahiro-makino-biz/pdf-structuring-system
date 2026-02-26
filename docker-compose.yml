@@ -56,6 +56,7 @@ services:
       #   - OpenAI/Azure/Bedrock/Gemini を同じコードで呼び出せる
       #   - プロバイダー切り替えは litellm/config.yaml で行う
       - LITELLM_URL=http://litellm:4000  # LiteLLMプロキシURL
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-litellm}  # LiteLLMプロキシのAPIキー
       - LITELLM_MODEL=${LITELLM_MODEL:-azure-gpt-4o}  # Azure OpenAIを使用
       # ---------------------------------------------------------------------------
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # PDF解析用（直接OpenAI呼び出し）
