@@ -404,8 +404,8 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
     1. MongoDBからファイル情報を取得
     2. pdf_to_images() でPDFを画像に変換
     3. 各ページに対して extract_page_data() でAI構造化
-    4. 結果を structured_data コレクションに保存
-    5. files コレクションの processed フラグを更新
+    4. 結果を pages コレクションに保存
+    5. 未処理ドキュメント（page_number: null）を削除
 
     【なぜこの実装か】
     - 非同期関数にすることで、DB操作中に他のリクエストをブロックしない

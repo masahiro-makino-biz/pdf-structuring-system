@@ -19,6 +19,7 @@
 # =============================================================================
 
 import json
+import traceback
 from fastmcp import FastMCP
 import chart_utils
 
@@ -32,7 +33,7 @@ mcp = FastMCP("pdf-tools")
 @mcp.tool()
 async def visualize_data(
     data: str,
-    chart_type: str = "strip",
+    chart_type: str = None,
     color: str = None,
     year_from: int = None,
     year_to: int = None,
@@ -40,6 +41,8 @@ async def visualize_data(
     max_value: float = None,
     show_reference: bool = True,
     x_axis: str = None,
+    key_filter: str = None,
+    above_reference: bool = False,
 ) -> str:
     """
     検索結果データからグラフを生成する（グラフ生成専用）
@@ -51,7 +54,7 @@ async def visualize_data(
 
     Args:
         data: MongoDB findの検索結果（JSON文字列）
-        chart_type: グラフの種類。"strip"(デフォルト), "scatter", "bar", "line"
+        chart_type: グラフの種類。"strip", "scatter", "bar", "line"。未指定なら自動判定（測定値キーが5個以下→line、6個以上→strip）
         color: データ点の色を統一する場合に指定（例: "red", "#FF6600"）。未指定なら測定値キーで自動色分け
         year_from: この年度以降のデータだけ表示（例: 2024）
         year_to: この年度以前のデータだけ表示（例: 2025）
@@ -59,6 +62,8 @@ async def visualize_data(
         max_value: この値以下のデータだけ表示（例: 1.0）
         show_reference: 基準値の赤い線を表示するか（デフォルト: True）
         x_axis: X軸に使うカラム。"year"(年度) or "key"(点検項目)。未指定なら自動判定（複数年→年度、単年→点検項目）
+        key_filter: 測定値キー名で絞る（部分一致、カンマ区切りで複数可）。例: "タイヤ・上・①" や "振動値・A,振動値・B"
+        above_reference: Trueにすると基準値を超えているデータだけ表示（デフォルト: False）
 
     Returns:
         グラフHTMLファイルパスを含むJSON文字列
@@ -127,12 +132,13 @@ async def visualize_data(
             max_value=max_value,
             show_reference=show_reference,
             x_axis=x_axis,
+            key_filter=key_filter,
+            above_reference=above_reference,
         )
         print(f"[visualize_data] 完了: {json.dumps(result, ensure_ascii=False)[:300]}", flush=True)
         result["reference_images"] = reference_images
     except Exception as e:
         print(f"[visualize_data] グラフ生成エラー: {e}", flush=True)
-        import traceback
         traceback.print_exc()
         return json.dumps({
             "success": False,

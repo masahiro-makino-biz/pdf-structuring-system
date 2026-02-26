@@ -29,6 +29,7 @@
 #
 # =============================================================================
 
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,13 @@ from pydantic import BaseModel
 # core/logging.py でログ出力を統一
 from core.config import get_settings
 from core.logging import setup_logging, get_logger
+
+# =============================================================================
+# サービス層
+# =============================================================================
+from services.pdf_processor import process_pdf
+from services.dummy_generator import generate_dummy_data
+from services.chat_service import process_chat, clear_history
 
 # ロギング初期化（アプリ起動時に1回だけ）
 setup_logging()
@@ -436,8 +444,6 @@ async def process_pdf_endpoint(
     Returns:
         処理結果
     """
-    from services.pdf_processor import process_pdf
-
     # ファイルの存在確認（pages コレクションから）
     file_doc = await db.pages.find_one({"file_id": file_id, "tenant": tenant})
     if not file_doc:
@@ -546,8 +552,6 @@ async def delete_file(
     Returns:
         削除結果
     """
-    import shutil
-
     # ファイル情報を取得（pages コレクションから）
     file_doc = await db.pages.find_one({"file_id": file_id, "tenant": tenant})
     if not file_doc:
@@ -623,8 +627,6 @@ async def generate_dummy_data_endpoint(request: DummyGenerateRequest):
     Returns:
         生成結果（グループID、レコード数等）
     """
-    from services.dummy_generator import generate_dummy_data
-
     # バリデーション
     if request.start_year >= request.end_year:
         raise HTTPException(status_code=400, detail="終了年は開始年より後にしてください")
@@ -729,8 +731,6 @@ async def chat(request: ChatRequest):
     Returns:
         AIの回答
     """
-    from services.chat_service import process_chat
-
     result = await process_chat(
         message=request.message,
         tenant=request.tenant,
@@ -760,7 +760,5 @@ async def clear_chat_history(session_id: str = Query(default="default")):
     Returns:
         成功メッセージ
     """
-    from services.chat_service import clear_history
-
     clear_history(session_id)
     return {"success": True, "message": f"セッション {session_id} の履歴をクリアしました"}

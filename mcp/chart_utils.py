@@ -168,7 +168,7 @@ def create_chart_for_location(
     equipment: str = "",
     equipment_part: str = "",
     reference_values: dict = None,
-    chart_type: str = "strip",
+    chart_type: str = None,
     color: str = None,
     year_from: int = None,
     year_to: int = None,
@@ -176,6 +176,8 @@ def create_chart_for_location(
     max_value: float = None,
     show_reference: bool = True,
     x_axis: str = None,
+    key_filter: str = None,
+    above_reference: bool = False,
 ) -> dict:
     """
     1つの計測箇所用のグラフを生成（複数年対応）
@@ -183,7 +185,7 @@ def create_chart_for_location(
     【動的パラメータ】
     chart_type, color, year_from/to, min/max_value, show_reference で
     グラフの種類・色・データ範囲をチャットから動的に指定できる。
-    すべてオプションで、指定しなければデフォルト（strip, 自動色分け, 全データ）。
+    すべてオプションで、指定しなければデフォルト（自動判定, 自動色分け, 全データ）。
     """
     if not data_points:
         return {
@@ -205,6 +207,16 @@ def create_chart_for_location(
         df = df[df["value"] >= min_value]
     if max_value is not None:
         df = df[df["value"] <= max_value]
+
+    # キー名フィルタ（部分一致、カンマ区切りで複数キーワード対応）
+    if key_filter is not None:
+        keywords = [k.strip() for k in key_filter.split(",")]
+        df = df[df["key"].apply(lambda k: any(kw in k for kw in keywords))]
+
+    # 基準値超過フィルタ（基準値を超えているデータだけ残す）
+    if above_reference and reference_values:
+        ref_min = min(reference_values.values())
+        df = df[df["value"] > ref_min]
 
     if df.empty:
         return {
@@ -259,10 +271,18 @@ def create_chart_for_location(
         chart_common["color_discrete_map"] = {
             k: gray_palette[i % len(gray_palette)] for i, k in enumerate(keys)
         }
-    elif color is not None:
-        pass  # 単一色指定: 後で上書き
-    else:
-        pass  # x_col=="key"の場合: colorなし
+    # chart_type が未指定（None）の場合、データに応じて自動判定
+    # 【なぜこの判定か】
+    # - 線グラフは「同じキーを年度でつなぐ」ので、複数年データが必要
+    # - 1年分しかないデータで線グラフにすると、点が1つだけで意味がない
+    # - 複数年 かつ 測定値キーが5個以下: 線グラフで経年変化を追いやすい
+    # - それ以外: 散布図（strip）で全体の分布を見る
+    if chart_type is None:
+        unique_keys = df["key"].nunique()
+        if unique_keys <= 5 and unique_years >= 2:
+            chart_type = "line"
+        else:
+            chart_type = "strip"
 
     chart_builders = {
         "strip": lambda: px.strip(**chart_common),
