@@ -42,7 +42,7 @@ services:
     build: ./api  # ./api/Dockerfile を使ってビルド
     container_name: pdf-api
     ports:
-      - "8000:8000"  # http://localhost:8000 でアクセス可能
+      - "8010:8000"  # http://localhost:8000 でアクセス可能
     volumes:
       - ./api:/app:Z  # ローカルのapiフォルダをコンテナ内の/appにマウント（コード変更即反映）
       - ./data:/data:Z  # 共有データフォルダ
@@ -83,7 +83,7 @@ services:
     build: ./ui
     container_name: pdf-ui
     ports:
-      - "8501:8501"  # http://localhost:8501 でアクセス可能
+      - "8502:8501"  # http://localhost:8501 でアクセス可能
     volumes:
       - ./ui:/app:Z
       - ./data:/data:Z
@@ -108,7 +108,7 @@ services:
     build: ./api/litellm
     container_name: pdf-litellm
     ports:
-      - "4000:4000"  # http://localhost:4000 でアクセス可能
+      - "4001:4000"  # http://localhost:4000 でアクセス可能
     volumes:
       - ./api/litellm:/app:Z  # 設定ファイル変更を即反映
     environment:
@@ -145,7 +145,7 @@ services:
       - MDB_MCP_READ_ONLY=true
     command: ["--transport", "http", "--httpHost", "0.0.0.0", "--httpPort", "3100"]
     ports:
-      - "3100:3100"
+      - "3101:3100"
     depends_on:
       - mongo
     restart: unless-stopped
@@ -162,7 +162,7 @@ services:
     build: ./mcp
     container_name: pdf-mcp
     ports:
-      - "8001:8001"
+      - "8011:8001"
     volumes:
       - ./mcp:/app:Z
       - ./data:/data:Z
