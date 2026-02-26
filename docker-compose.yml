@@ -112,6 +112,8 @@ services:
     volumes:
       - ./api/litellm:/app:Z  # 設定ファイル変更を即反映
     environment:
+      # LiteLLMマスターキー（APIサービスと同じキーを共有）
+      - LITELLM_MASTER_KEY=${LITELLM_API_KEY:-sk-litellm}
       # OpenAI
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       # Azure OpenAI
