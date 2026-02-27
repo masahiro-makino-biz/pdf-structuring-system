@@ -20,7 +20,8 @@ WORKDIR /app
 # 【なぜ[proxy]オプションか】
 # - LiteLLMはSDKとプロキシサーバーの2つの使い方がある
 # - [proxy]でプロキシサーバー機能が有効になる
-RUN pip install --no-cache-dir 'litellm[proxy]'
+# バージョン固定: 未固定だと新バージョンで認証挙動が変わりエラーになる
+RUN pip install --no-cache-dir 'litellm[proxy]==1.81.15'
 
 # 設定ファイルをコピー
 COPY config.yaml /app/config.yaml
