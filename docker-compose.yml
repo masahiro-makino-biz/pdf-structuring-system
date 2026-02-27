@@ -60,6 +60,7 @@ services:
       - LITELLM_MODEL=${LITELLM_MODEL:-azure-gpt-4o}  # Azure OpenAIを使用
       # ---------------------------------------------------------------------------
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}  # PDF解析用（直接OpenAI呼び出し）
+      - OPENAI_AGENTS_DISABLE_TRACING=1  # OpenAI Agents SDKのトレース送信を無効化
       - PYTHONIOENCODING=utf-8  # 日本語ファイル名対応
       - LANG=C.UTF-8
     depends_on:
