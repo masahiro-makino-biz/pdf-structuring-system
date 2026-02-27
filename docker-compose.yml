@@ -107,8 +107,6 @@ services:
   litellm:
     build: ./api/litellm
     container_name: pdf-litellm
-    # DockerfileのCMDを上書きし、--master_keyでAPIキー認証を設定
-    command: ["litellm", "--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0", "--master_key", "sk-litellm"]
     ports:
       - "4001:4000"  # http://localhost:4000 でアクセス可能
     volumes:
