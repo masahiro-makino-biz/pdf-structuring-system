@@ -91,8 +91,8 @@ class Settings(BaseSettings):
         description="LiteLLMプロキシURL"
     )
     litellm_api_key: str = Field(
-        default="sk-litellm",
-        description="LiteLLMプロキシのAPIキー（マスターキー設定時に必要）"
+        default="litellm-key",
+        description="LiteLLMプロキシのAPIキー（sk-で始めないこと。LiteLLMが認証チェックをトリガーする）"
     )
     litellm_model: str = Field(
         default="gpt-4o",
