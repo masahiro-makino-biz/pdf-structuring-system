@@ -49,8 +49,8 @@ def get_openai_client():
     """
     logger.info(f"LiteLLMクライアント作成: url={settings.litellm_url}")
     return OpenAI(
-        api_key="sk-litellm",  # LiteLLMでは任意の値でOK
-        base_url=settings.litellm_url
+        api_key=settings.litellm_api_key,
+        base_url=f"{settings.litellm_url}/v1"
     )
 
 
