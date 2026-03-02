@@ -149,6 +149,116 @@ async def visualize_data(
     return json.dumps(result, ensure_ascii=False)
 
 
+@mcp.tool()
+async def visualize_prediction(
+    actual_data: str,
+    predicted_data: str,
+    prediction_info: str = None,
+) -> str:
+    """
+    実データ + AI予測データ を1つのグラフに可視化する（予測グラフ専用）
+
+    【使い方】
+    1. MongoDB MCPのfindで実データを取得する
+    2. AIが実データのトレンドを分析して予測データを生成する
+    3. actual_data にfindの結果、predicted_data にAI予測結果を渡す
+
+    Args:
+        actual_data: MongoDB findの結果（JSON文字列）。visualize_dataと同じ形式
+        predicted_data: AI予測データ（JSON文字列）。形式:
+            [{"year": 2025, "values": {"摩耗量・タイヤ①・上": 0.32}}, ...]
+        prediction_info: 予測メタ情報（JSON文字列、オプション）。形式:
+            {"method": "線形近似", "threshold_crossing": {"キー名": 2027}, "note": "..."}
+
+    Returns:
+        グラフHTMLファイルパスを含むJSON文字列
+    """
+    print(f"[visualize_prediction] 開始", flush=True)
+
+    # --- actual_data のパース（visualize_data と同じロジック） ---
+    try:
+        documents = json.loads(actual_data)
+    except json.JSONDecodeError as e:
+        print(f"[visualize_prediction] actual_data JSONパースエラー: {e}", flush=True)
+        return json.dumps({
+            "success": False,
+            "error": f"actual_dataのJSON解析エラー: {str(e)}",
+            "charts": []
+        }, ensure_ascii=False)
+
+    if not isinstance(documents, list):
+        documents = [documents]
+
+    results = []
+    reference_images = []
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        doc_data = doc.get("data", {})
+        if not doc_data:
+            continue
+        results.append({
+            "matched_records": [{"data": doc_data}]
+        })
+        if doc.get("image_path"):
+            reference_images.append(doc.get("image_path"))
+
+    if not results:
+        return json.dumps({
+            "success": False,
+            "error": "有効な実データがありません",
+            "charts": []
+        }, ensure_ascii=False)
+
+    # --- predicted_data のパース ---
+    try:
+        predictions = json.loads(predicted_data)
+    except json.JSONDecodeError as e:
+        print(f"[visualize_prediction] predicted_data JSONパースエラー: {e}", flush=True)
+        return json.dumps({
+            "success": False,
+            "error": f"predicted_dataのJSON解析エラー: {str(e)}",
+            "charts": []
+        }, ensure_ascii=False)
+
+    if not isinstance(predictions, list):
+        predictions = [predictions]
+
+    # --- prediction_info のパース（オプション） ---
+    info = {}
+    if prediction_info:
+        try:
+            info = json.loads(prediction_info)
+        except json.JSONDecodeError:
+            pass
+
+    print(
+        f"[visualize_prediction] 実データ: {len(results)}件, "
+        f"予測年数: {len(predictions)}年分",
+        flush=True
+    )
+
+    # --- グラフ生成 ---
+    try:
+        result = chart_utils.create_prediction_chart(
+            results=results,
+            predictions=predictions,
+            prediction_info=info,
+        )
+        print(f"[visualize_prediction] 完了: {json.dumps(result, ensure_ascii=False)[:300]}", flush=True)
+        result["reference_images"] = reference_images
+    except Exception as e:
+        print(f"[visualize_prediction] グラフ生成エラー: {e}", flush=True)
+        traceback.print_exc()
+        return json.dumps({
+            "success": False,
+            "error": f"予測グラフ生成エラー: {str(e)}",
+            "charts": []
+        }, ensure_ascii=False)
+
+    return json.dumps(result, ensure_ascii=False)
+
+
 # =============================================================================
 # FastAPI + MCPマウント
 # =============================================================================

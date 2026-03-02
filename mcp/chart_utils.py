@@ -375,6 +375,345 @@ def create_chart_for_location(
     }
 
 
+# =============================================================================
+# 予測グラフ生成
+# =============================================================================
+#
+# 【予測グラフの仕様】
+# - 実データ: グレー系の実線 + 丸マーカー（既存グラフと同じ）
+# - 予測データ: オレンジ系の破線 + ダイヤマーカー
+# - 実データの最終点と予測の最初の点は線でつながる
+# - 基準値: 赤い水平破線（既存グラフと同じ）
+# - 基準値超過予測年: 赤い垂直点線 + アノテーション（注釈）
+# - タイトル末尾に「【予測】」を付与
+#
+# 【なぜ create_chart_for_location() を再利用しないか】
+# 既存関数は px.line() 等で自動描画するが、予測グラフは
+# 実線と破線を明確に分ける必要がある。go.Scatter() で手動描画する方が
+# スタイルの制御が容易で、実データと予測データの区別が明確になる。
+#
+# =============================================================================
+
+# オレンジ系グラデーション（予測データ用）
+# グレー（実績）とオレンジ（予測）は色覚的にも区別しやすい
+PREDICTION_PALETTE = [
+    "#FF8C00", "#FFA500", "#FF7F50", "#FF6347",
+    "#E67E22", "#D2691E", "#CD853F", "#DEB887",
+]
+
+
+def create_prediction_chart(
+    results: list,
+    predictions: list,
+    prediction_info: dict = None,
+) -> dict:
+    """
+    実データ + 予測データ を1つのグラフに可視化する（メイン関数）
+
+    【処理の流れ】
+    1. group_by_measurement_location() で実データを計測箇所ごとにグループ化
+    2. predictions の測定値キー名で、どの計測箇所に属するか振り分ける
+    3. 計測箇所ごとに、実線（実データ）+ 破線（予測）+ 基準値線 のグラフを生成
+
+    Args:
+        results: MongoDB findの結果を変換したリスト（visualize_data と同じ形式）
+        predictions: AI予測データのリスト
+            [{"year": 2025, "values": {"摩耗量・タイヤ①・上": 0.32, ...}}, ...]
+        prediction_info: 予測メタ情報（オプション）
+            {"method": "線形近似", "threshold_crossing": {"キー名": 2027}, "note": "..."}
+
+    Returns:
+        {"success": bool, "charts": [...], "total_locations": int, "prediction_method": str}
+    """
+    if prediction_info is None:
+        prediction_info = {}
+
+    # 1. 実データを計測箇所ごとにグループ化（既存関数を再利用）
+    location_groups = group_by_measurement_location(results)
+
+    if not location_groups:
+        return {
+            "success": False,
+            "error": "実データが見つかりません",
+            "charts": []
+        }
+
+    # 2. 予測データを計測箇所ごとに振り分ける
+    #    各 location_group の data_points に含まれるキー名と、
+    #    predictions の values のキー名をマッチングする
+    prediction_by_location = _assign_predictions_to_locations(
+        location_groups, predictions
+    )
+
+    # 3. 計測箇所ごとにグラフを生成
+    threshold_crossing = prediction_info.get("threshold_crossing", {})
+    charts = []
+
+    for location, group in location_groups.items():
+        pred_points = prediction_by_location.get(location, [])
+
+        result = _create_single_prediction_chart(
+            location=location,
+            data_points=group["data_points"],
+            pred_points=pred_points,
+            equipment=group["equipment"],
+            equipment_part=group["equipment_part"],
+            reference_values=group["reference_values"],
+            threshold_crossing=threshold_crossing,
+        )
+        if result["success"]:
+            charts.append(result)
+
+    if not charts:
+        return {
+            "success": False,
+            "error": "予測グラフを生成できませんでした",
+            "charts": []
+        }
+
+    return {
+        "success": True,
+        "charts": charts,
+        "total_locations": len(charts),
+        "prediction_method": prediction_info.get("method", ""),
+    }
+
+
+def _assign_predictions_to_locations(
+    location_groups: dict,
+    predictions: list,
+) -> dict:
+    """
+    予測データを計測箇所ごとに振り分ける
+
+    【マッチング方法】
+    各計測箇所の実データに含まれる測定値キー名を集め、
+    予測データの values に同じキー名があれば、その計測箇所に紐づける。
+
+    Returns:
+        {"タイヤ外周部": [{"year": 2025, "key": "摩耗量・タイヤ①・上", "value": 0.32}, ...]}
+    """
+    # 各計測箇所が持つ測定値キー名のセットを作る
+    location_keys = {}
+    for location, group in location_groups.items():
+        keys = set()
+        for dp in group["data_points"]:
+            keys.add(dp["key"])
+        location_keys[location] = keys
+
+    # 予測データをフラットなポイント列に変換して計測箇所に振り分け
+    result = {loc: [] for loc in location_groups}
+
+    for pred in predictions:
+        year = pred.get("year")
+        values = pred.get("values", {})
+        if year is None:
+            continue
+
+        for key, value in values.items():
+            if not isinstance(value, (int, float)):
+                continue
+            # このキーがどの計測箇所に属するか探す
+            for location, keys in location_keys.items():
+                if key in keys:
+                    result[location].append({
+                        "year": year,
+                        "key": key,
+                        "value": value,
+                    })
+                    break
+
+    return result
+
+
+def _create_single_prediction_chart(
+    location: str,
+    data_points: list,
+    pred_points: list,
+    equipment: str = "",
+    equipment_part: str = "",
+    reference_values: dict = None,
+    threshold_crossing: dict = None,
+) -> dict:
+    """
+    1つの計測箇所の予測グラフを生成
+
+    【なぜ go.Scatter を直接使うか】
+    px.line() だと全データが同じスタイルで描画される。
+    実データ（実線）と予測データ（破線）でスタイルを分けるには、
+    go.Scatter() で個別にトレースを追加する必要がある。
+
+    【線のつなげ方】
+    実データの最終年の値を予測データの先頭にもコピーすることで、
+    実線と破線が途切れずにつながるようにする。
+    """
+    if not data_points:
+        return {
+            "success": False,
+            "error": f"'{location}'のデータが見つかりません",
+            "chart_path": ""
+        }
+
+    if reference_values is None:
+        reference_values = {}
+    if threshold_crossing is None:
+        threshold_crossing = {}
+
+    fig = go.Figure()
+
+    # --- 実データを測定値キーごとにグループ化して描画 ---
+    actual_df = pd.DataFrame(data_points)
+    actual_df = actual_df.sort_values("year")
+    actual_keys = actual_df["key"].unique().tolist()
+
+    # --- 予測期間の上限チェック ---
+    # 予測が長すぎるとX軸が引き延ばされて実データが潰れてしまう。
+    # 実データの年数を超えない範囲に予測データをカットする。
+    if pred_points:
+        actual_years = actual_df["year"].unique()
+        actual_span = int(actual_years.max()) - int(actual_years.min()) + 1
+        max_pred_year = int(actual_years.max()) + max(actual_span, 3)
+        pred_points = [p for p in pred_points if p["year"] <= max_pred_year]
+
+    # グレー系パレット（既存グラフと同じ）
+    gray_palette = [
+        "#808080", "#999999", "#6b6b6b", "#b0b0b0",
+        "#707070", "#a0a0a0", "#585858", "#c0c0c0",
+    ]
+
+    for i, key in enumerate(actual_keys):
+        key_data = actual_df[actual_df["key"] == key].sort_values("year")
+        color = gray_palette[i % len(gray_palette)]
+
+        fig.add_trace(go.Scatter(
+            x=key_data["year"].astype(str).tolist(),
+            y=key_data["value"].tolist(),
+            mode="lines+markers",
+            name=key,
+            line=dict(color=color, width=2),
+            marker=dict(size=7, color=color),
+            hovertemplate=f"{key}<br>年度: %{{x}}<br>測定値: %{{y:.4f}}<extra></extra>",
+        ))
+
+    # --- 予測データを測定値キーごとにグループ化して描画 ---
+    if pred_points:
+        pred_df = pd.DataFrame(pred_points)
+        pred_df = pred_df.sort_values("year")
+        pred_keys = pred_df["key"].unique().tolist()
+
+        for i, key in enumerate(pred_keys):
+            key_pred = pred_df[pred_df["key"] == key].sort_values("year")
+            color = PREDICTION_PALETTE[i % len(PREDICTION_PALETTE)]
+
+            # 実データの最終点を予測線の先頭に追加（線をつなげるため）
+            #
+            # 【この処理がないとどうなるか】
+            # 実線の最後と破線の最初の間に隙間ができてしまい、
+            # グラフが途切れて見える。接続点を追加して自然につなげる。
+            x_vals = key_pred["year"].astype(str).tolist()
+            y_vals = key_pred["value"].tolist()
+
+            actual_key_data = actual_df[actual_df["key"] == key].sort_values("year")
+            if not actual_key_data.empty:
+                last_year = str(int(actual_key_data["year"].iloc[-1]))
+                last_value = actual_key_data["value"].iloc[-1]
+                x_vals = [last_year] + x_vals
+                y_vals = [last_value] + y_vals
+
+            fig.add_trace(go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode="lines+markers",
+                name=f"予測: {key}",
+                line=dict(color=color, width=2, dash="dash"),
+                marker=dict(size=7, symbol="diamond", color=color),
+                hovertemplate=f"予測: {key}<br>年度: %{{x}}<br>予測値: %{{y:.4f}}<extra></extra>",
+            ))
+
+    # --- 基準値の水平線（既存グラフと同じ赤い破線） ---
+    if reference_values:
+        # X軸の全範囲（実データ + 予測データ）を計算
+        all_years = sorted(set(
+            actual_df["year"].astype(str).tolist()
+            + ([str(p["year"]) for p in pred_points] if pred_points else [])
+        ))
+        for ref_key, ref_val in reference_values.items():
+            fig.add_trace(go.Scatter(
+                x=[all_years[0], all_years[-1]],
+                y=[ref_val, ref_val],
+                mode="lines",
+                line=dict(dash="dash", color="red", width=2),
+                name=f"基準値({ref_key}): {ref_val}",
+            ))
+
+    # --- 基準値超過予測年の表示 ---
+    #
+    # 【なぜ垂直線を使わないか】
+    # add_shape() で垂直線を描くと、X軸にその年度がカテゴリとして追加され、
+    # グラフ全体が引き延ばされて実データが潰れてしまう。
+    # そのため、常にグラフ右上のテキスト注釈として表示する。
+    if threshold_crossing:
+        # 複数キーの超過予測年をまとめて表示（重複年はまとめる）
+        unique_years = sorted(set(threshold_crossing.values()))
+        crossing_text = "  ".join(f"超過予測: {y}年" for y in unique_years)
+        fig.add_annotation(
+            xref="paper", yref="paper",
+            x=0.98, y=0.98,
+            text=crossing_text,
+            showarrow=False,
+            font=dict(size=12, color="red", family=JAPANESE_FONT),
+            xanchor="right", yanchor="top",
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="red",
+            borderwidth=1,
+            borderpad=4,
+        )
+
+    # --- レイアウト設定（既存グラフとほぼ同じ） ---
+    title_parts = [p for p in [equipment, equipment_part, location] if p]
+    chart_title = " / ".join(title_parts) + " 【予測】"
+
+    fig.update_layout(
+        title=dict(text=chart_title, font=dict(size=16, family=JAPANESE_FONT)),
+        xaxis_title=dict(text="年度", font=dict(size=13, family=JAPANESE_FONT)),
+        yaxis_title=dict(text="測定値", font=dict(size=13, family=JAPANESE_FONT)),
+        font=dict(family=JAPANESE_FONT),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        yaxis=dict(gridcolor="rgba(0,0,0,0.1)", gridwidth=1),
+        xaxis=dict(showgrid=False),
+        showlegend=True,
+        legend=dict(
+            font=dict(size=10, family=JAPANESE_FONT),
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.02,
+        ),
+        width=900,
+        height=500,
+        margin=dict(l=60, r=160, t=60, b=50),
+    )
+
+    # HTMLファイルに保存
+    safe_location = re.sub(r'[^\w\-]', '_', location)
+    chart_path = figure_to_file(fig, f"{safe_location}_prediction.html")
+
+    actual_count = len(actual_df)
+    pred_count = len(pred_points) if pred_points else 0
+
+    return {
+        "success": True,
+        "chart_path": chart_path,
+        "chart_title": chart_title,
+        "location": location,
+        "actual_data_points": actual_count,
+        "predicted_data_points": pred_count,
+        "threshold_crossing": threshold_crossing,
+        "reference_values": reference_values,
+    }
+
+
 def create_charts_by_location(results: list, **options) -> dict:
     """
     計測箇所ごとにグラフを生成（メイン関数）
