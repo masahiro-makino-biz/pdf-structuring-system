@@ -31,11 +31,18 @@ WORKDIR /app
 # 【fonts-ipafont-gothic】日本語フォント
 # Plotlyでグラフに日本語を表示するために必要
 # 【fontconfig】fc-cacheコマンドを提供（フォントキャッシュ更新用）
+# 【gcc, g++, python3-dev】Prophetのビルドに必要なCコンパイラと開発ヘッダ
+# 【poppler-utils】PDF→画像変換用
+# 【fonts-ipafont-gothic】日本語フォント（Plotlyグラフ用）
+# 【fontconfig】フォントキャッシュ管理
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     poppler-utils \
     fonts-ipafont-gothic \
     fontconfig \
+    gcc \
+    g++ \
+    python3-dev \
     && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 

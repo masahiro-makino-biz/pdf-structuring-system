@@ -150,6 +150,131 @@ async def visualize_data(
 
 
 @mcp.tool()
+async def forecast_time_series(
+    ds: str,
+    y: str,
+    periods: int = 5,
+    upper_limit: float = None,
+    lower_limit: float = None,
+) -> str:
+    """
+    Meta Prophetによる時系列予測を実行する（統計モデルベース）
+
+    【使い方】
+    1. MongoDB MCPのfindで年度別の測定値データを取得する
+    2. ds（日付リスト）とy（測定値リスト）を渡す
+    3. 予測結果をvisualize_predictionのpredicted_dataに渡してグラフ化する
+
+    Args:
+        ds: 日付のリスト（JSON文字列）。例: '["2018-01-01", "2019-01-01", "2020-01-01"]'
+        y: 測定値のリスト（JSON文字列）。dsと同じ長さ。例: '[0.10, 0.16, 0.22]'
+        periods: 予測する将来の期間数（デフォルト: 5）
+        upper_limit: 上限値（基準値）。超過する予測値にフラグを立てる
+        lower_limit: 下限値。下回る予測値にフラグを立てる
+
+    Returns:
+        予測結果のJSON。forecast配列（ds, yhat, yhat_lower, yhat_upper, status）と
+        メタ情報（トレンド方向、超過年度など）を含む
+    """
+    import pandas as pd
+    from prophet import Prophet
+
+    print(f"[forecast_time_series] 開始: periods={periods}, upper_limit={upper_limit}", flush=True)
+
+    # パラメータのパース
+    try:
+        dates = json.loads(ds)
+        values = json.loads(y)
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "success": False,
+            "error": f"パラメータのJSON解析エラー: {str(e)}"
+        }, ensure_ascii=False)
+
+    if len(dates) != len(values):
+        return json.dumps({
+            "success": False,
+            "error": f"dsとyの長さが一致しません（ds={len(dates)}, y={len(values)}）"
+        }, ensure_ascii=False)
+
+    if len(dates) < 2:
+        return json.dumps({
+            "success": False,
+            "error": "データが2点未満のため予測できません"
+        }, ensure_ascii=False)
+
+    # Prophet用DataFrameを作成
+    df = pd.DataFrame({"ds": dates, "y": values})
+    df["ds"] = pd.to_datetime(df["ds"])
+
+    # Prophetモデルで予測を実行
+    try:
+        model = Prophet()
+        model.fit(df)
+        future = model.make_future_dataframe(periods=periods, freq="YS")
+        forecast = model.predict(future)
+    except Exception as e:
+        print(f"[forecast_time_series] Prophetエラー: {e}", flush=True)
+        return json.dumps({
+            "success": False,
+            "error": f"Prophet予測エラー: {str(e)}"
+        }, ensure_ascii=False)
+
+    # 予測結果を整形
+    out = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+    out["ds"] = out["ds"].dt.strftime("%Y-%m-%d")
+    out["yhat"] = out["yhat"].round(4)
+    out["yhat_lower"] = out["yhat_lower"].round(4)
+    out["yhat_upper"] = out["yhat_upper"].round(4)
+
+    # 基準値チェック
+    first_exceed_year = None
+    statuses = []
+    for _, row in out.iterrows():
+        yhat_val = row["yhat"]
+        if upper_limit is not None and yhat_val > upper_limit:
+            statuses.append("EXCEEDS_UPPER")
+            if first_exceed_year is None:
+                first_exceed_year = row["ds"][:4]
+        elif lower_limit is not None and yhat_val < lower_limit:
+            statuses.append("BELOW_LOWER")
+        else:
+            statuses.append("OK")
+    out["status"] = statuses
+
+    # トレンド方向の判定
+    future_only = forecast.iloc[len(df):]
+    hist_mean = df["y"].mean()
+    if len(future_only) > 0 and hist_mean != 0:
+        fcst_mean = future_only["yhat"].mean()
+        change_pct = ((fcst_mean - hist_mean) / abs(hist_mean)) * 100
+        if change_pct > 5:
+            trend = f"上昇傾向（+{change_pct:.1f}%）"
+        elif change_pct < -5:
+            trend = f"下降傾向（{change_pct:.1f}%）"
+        else:
+            trend = "横ばい"
+    else:
+        trend = "判定不能"
+
+    result = {
+        "success": True,
+        "forecast": out.to_dict(orient="records"),
+        "meta": {
+            "periods": periods,
+            "n_history": len(df),
+            "hist_start": df["ds"].min().strftime("%Y-%m-%d"),
+            "hist_end": df["ds"].max().strftime("%Y-%m-%d"),
+            "trend": trend,
+            "first_exceed_year": first_exceed_year,
+        }
+    }
+
+    print(f"[forecast_time_series] 完了: trend={trend}, exceed={first_exceed_year}", flush=True)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool()
 async def visualize_prediction(
     actual_data: str,
     predicted_data: str,

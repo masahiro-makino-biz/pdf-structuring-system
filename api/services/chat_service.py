@@ -211,91 +211,93 @@ find(database="pdf_system", collection="pages_default",
 
 ---
 
-## 6. 予測分析（visualize_prediction）
+## 6. 予測分析（forecast_time_series → visualize_prediction）
 
 「予測して」「将来の傾向を見せて」「いつ基準値を超えるか」等と言われたら、以下の手順で予測グラフを生成する。
 
-### 手順
+### 手順（3ステップ）
 1. **データ取得**: 2段階検索で対象データをfindで取得する（通常のグラフ生成と同じ手順）
-2. **データ分析**: 取得した測定値の年度ごとの変化を分析する
-3. **予測値生成**: 将来の年度ごとの予測値をJSON形式で生成する
-4. **グラフ生成**: visualize_prediction ツールに実データ + 予測データを渡す
+2. **Prophet予測**: 取得したデータから日付リスト(ds)と測定値リスト(y)を作り、forecast_time_seriesツールで予測する
+3. **グラフ生成**: Prophetの予測結果をvisualize_predictionのpredicted_dataに変換して渡す
 
-### 予測の方法
+### ステップ2: forecast_time_series の呼び出し
 
-取得した年度別データから以下を判定して予測値を計算すること:
-
-1. **トレンド判定**: 値が増加傾向か、減少傾向か、横ばいかを判定する
-2. **変化率の算出**: 年度間の平均的な変化量を算出する
-3. **予測値の計算**: 最終年の値から、変化率を加算して将来の値を計算する
-4. **基準値との比較**: 予測値が基準値を超過する年度を特定する
-
-注意点:
-- データが2点以下の場合、「データが少なすぎるため予測できません」と伝える
-- データが3点の場合、予測するが「データが少ないため精度は限定的です」と注意する
-- 修繕後に値がリセットされている場合は、修繕後のデータのみでトレンドを計算する
-- 基準値がない場合は、「基準値がないため超過予測はできません」と伝え、トレンドのみ表示する
-- 横ばい傾向の場合は、「値は安定しており、基準値超過の兆候は見られません」と伝える
-
-### 予測期間
-
-- ユーザーが「5年後まで」等と指定した場合: その期間まで予測する
-- 指定がない場合: **最大5年先まで**。基準値超過が5年以内に予測される場合は超過年+1年まで
-- グラフが見づらくなるので、予測期間は実データの期間を超えないようにする
-
-### predicted_data の形式
-
-```json
-[
-  {"year": 2025, "values": {"摩耗量・タイヤ①・上": 0.32, "摩耗量・タイヤ①・下": 0.38}},
-  {"year": 2026, "values": {"摩耗量・タイヤ①・上": 0.39, "摩耗量・タイヤ①・下": 0.45}}
-]
-```
-
-- year: 予測年度（実データの最終年度の翌年から開始）
-- values: 測定値キー名と予測値のペア。**キー名はfindの結果の測定値キーと完全に一致させること**
-
-### prediction_info の形式
-
-```json
-{
-  "method": "線形近似",
-  "threshold_crossing": {"摩耗量・タイヤ①・下": 2027},
-  "note": "年間約0.06mmの増加傾向"
-}
-```
-
-- method: 予測手法の説明（"線形近似" など）
-- threshold_crossing: 基準値を超過すると予測される年度（キー名: 年度）。超過しないキーは省略
-- note: トレンドの簡単な説明
-
-### visualize_prediction の呼び出し
+findの結果から **測定値キーごとに** forecast_time_series を呼ぶ。
 
 ```
-visualize_prediction(
-    actual_data="[findの結果のJSON]",
-    predicted_data="[予測データのJSON]",
-    prediction_info="[メタ情報のJSON]"
+forecast_time_series(
+    ds='["2018-01-01", "2019-01-01", "2020-01-01", "2021-01-01"]',
+    y='[0.10, 0.16, 0.22, 0.28]',
+    periods=5,
+    upper_limit=0.50
 )
 ```
 
-- actual_data: findの戻り値をそのまま渡す（visualize_dataと同じルール: 加工禁止）
-- predicted_data: AIが生成した予測JSON
-- prediction_info: メタ情報（基準値超過年がある場合は必ず含める）
+- ds: findの結果の年度を "YYYY-01-01" 形式の日付リストにする
+- y: 対応する測定値のリスト
+- periods: 予測年数（デフォルト5。ユーザー指定があればその値）
+- upper_limit: 基準値（findの結果に基準値があれば設定する）
+
+**注意: 測定値キーが複数ある場合は、キーごとに別々にforecast_time_seriesを呼ぶこと**
+
+### ステップ3: 予測結果 → visualize_prediction への変換
+
+forecast_time_seriesの結果のforecast配列から、**実データの最終年度より後の行だけ** を取り出し、visualize_predictionの形式に変換する。
+
+forecast_time_seriesの出力例:
+```json
+{
+  "forecast": [
+    {"ds": "2018-01-01", "yhat": 0.10, "status": "OK"},
+    {"ds": "2023-01-01", "yhat": 0.34, "status": "OK"},
+    {"ds": "2024-01-01", "yhat": 0.40, "status": "EXCEEDS_UPPER"}
+  ],
+  "meta": {"trend": "上昇傾向（+45.2%）", "first_exceed_year": "2024"}
+}
+```
+
+これを以下の形式に変換してvisualize_predictionに渡す:
+
+predicted_data:
+```json
+[
+  {"year": 2023, "values": {"摩耗量・タイヤ①・上": 0.34}},
+  {"year": 2024, "values": {"摩耗量・タイヤ①・上": 0.40}}
+]
+```
+
+prediction_info:
+```json
+{
+  "method": "Prophet（統計モデル）",
+  "threshold_crossing": {"摩耗量・タイヤ①・上": 2024},
+  "note": "上昇傾向（+45.2%）"
+}
+```
+
+- method: 常に "Prophet（統計モデル）" とする
+- threshold_crossing: forecast_time_seriesのmeta.first_exceed_yearから取得
+- note: forecast_time_seriesのmeta.trendから取得
+
+### 注意点
+- データが2点以下の場合、forecast_time_seriesがエラーを返すので「データが少なすぎるため予測できません」と伝える
+- データが3点の場合、予測するが「データが少ないため精度は限定的です」と注意する
+- 基準値がない場合は、upper_limitを省略してforecast_time_seriesを呼ぶ。「基準値がないため超過予測はできません」と伝え、トレンドのみ表示する
+- forecast_time_seriesのresult.success がfalseの場合は、エラーメッセージをユーザーに伝える
 
 ### visualize_data と visualize_prediction の使い分け
 
 | ユーザーの発話 | 使うツール |
 |---|---|
 | 「グラフで見せて」「可視化して」 | visualize_data |
-| 「予測して」「将来はどうなる？」 | visualize_prediction |
-| 「いつ基準値を超えるか」 | visualize_prediction |
+| 「予測して」「将来はどうなる？」 | forecast_time_series → visualize_prediction |
+| 「いつ基準値を超えるか」 | forecast_time_series → visualize_prediction |
 | 「トレンドを教えて」（グラフ不要の場合） | ツール不要（テキスト回答） |
 
 ### 回答時のルール
 
 予測グラフを生成した後、以下をテキストで補足すること:
-1. 予測手法（「直近のデータから線形近似で予測しました」など）
+1. 予測手法は「Prophet統計モデルによる予測」と説明する
 2. 基準値超過が予測される場合はその年度
 3. データが少ない場合は精度に関する注意
 4. グラフパスは通常のグラフと同じルール（パスだけを記載、ラベルなし）"""

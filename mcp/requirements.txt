@@ -54,3 +54,17 @@ plotly>=5.18.0
 #   - plotly.expressに渡すDataFrame（表形式データ）の作成
 #   - plotly.expressはpandasのDataFrameを入力として期待する
 pandas>=2.0.0
+
+# 【prophet】Meta（Facebook）製の時系列予測ライブラリ
+# 【用途】
+#   - 点検データの測定値トレンドを統計モデルで予測する
+#   - forecast_time_series MCPツールで使用
+# 【なぜProphetか】
+#   - 数式ベースなので毎回同じ結果（再現性がある）
+#   - トレンド + 季節性を自動分離できる
+#   - 変化点（トレンドが途中で変わる）も検出可能
+# 【他の選択肢】
+#   - LLM予測: 手軽だが毎回結果が変わる（既存実装として併用可能）
+#   - scikit-learn: 汎用的だが時系列特化ではない
+#   - statsmodels(ARIMA): 古典的だが設定が複雑
+prophet>=1.1.5
