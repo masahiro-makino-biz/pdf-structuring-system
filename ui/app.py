@@ -7,19 +7,45 @@ import requests
 import os
 import uuid
 import re
+import hmac
 
 # =============================================================================
 # 設定
 # =============================================================================
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+BASIC_USER = os.getenv("BASIC_AUTH_USER", "admin")
+BASIC_PASS = os.getenv("BASIC_AUTH_PASS", "password")
 
 # =============================================================================
-# ページ設定
+# ページ設定（set_page_configは最初に1回だけ呼ぶ必要がある）
 # =============================================================================
 st.set_page_config(
     page_title="PDF構造化システム",
     layout="wide",
 )
+
+
+# =============================================================================
+# Basic認証
+# =============================================================================
+def check_auth():
+    """認証チェック。未認証ならログインフォームを表示してアプリを停止する"""
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("ログイン")
+    user = st.text_input("ユーザー名")
+    password = st.text_input("パスワード", type="password")
+    if st.button("ログイン"):
+        if hmac.compare_digest(user, BASIC_USER) and hmac.compare_digest(password, BASIC_PASS):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("ユーザー名またはパスワードが正しくありません")
+    st.stop()
+
+
+check_auth()
 
 # =============================================================================
 # サイドバー - ページ選択

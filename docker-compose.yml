@@ -90,6 +90,8 @@ services:
       - ./data:/data:Z
     environment:
       - API_URL=http://api:8000  # APIサーバーへの接続先
+      - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
+      - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-password}
     depends_on:
       - api
     restart: unless-stopped
