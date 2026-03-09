@@ -27,6 +27,7 @@
 
 from openai import AsyncOpenAI
 from agents import Agent, Runner, set_default_openai_client
+from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from agents.mcp import MCPServerStreamableHttp
 
 from core.config import get_settings
@@ -56,6 +57,25 @@ _openai_client = AsyncOpenAI(
     api_key=settings.litellm_api_key,
 )
 set_default_openai_client(_openai_client)
+
+# =============================================================================
+# Chat Completionsモデル設定
+# =============================================================================
+# 【なぜ OpenAIChatCompletionsModel を使うか】
+# OpenAI Agents SDKはデフォルトで Responses API（/v1/responses）を使う。
+# Responses APIのツール定義には "namespace" フィールドが含まれるが、
+# Azure OpenAIはこのフィールドを認識できず400エラーになる。
+#
+# OpenAIChatCompletionsModel を使うと Chat Completions API（/v1/chat/completions）
+# 形式でリクエストを送る。この形式にはnamespaceが含まれないため、
+# Azure/Bedrock等のプロバイダーでも問題なく動作する。
+#
+# 【この行がないとどうなるか】
+# Azure OpenAIを使用時に "Unknown parameter: 'input[1].namespace'" エラーが発生する。
+_chat_model = OpenAIChatCompletionsModel(
+    model=settings.litellm_model,
+    openai_client=_openai_client,
+)
 
 # =============================================================================
 # システムプロンプト
@@ -423,7 +443,7 @@ async def process_chat(message: str, tenant: str = "default", session_id: str = 
                 name="DocumentAssistant",
                 instructions=SYSTEM_PROMPT,
                 mcp_servers=[mongo_mcp, viz_mcp],
-                model=settings.litellm_model,
+                model=_chat_model,
             )
             result = await Runner.run(agent, full_message)
 
