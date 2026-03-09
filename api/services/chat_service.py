@@ -430,14 +430,21 @@ async def process_chat(message: str, tenant: str = "default", session_id: str = 
         # 2つのMCPサーバーに接続してエージェントを実行
         # ① MongoDB MCP: find/aggregateでデータ検索
         # ② 自作MCP: visualize_dataでグラフ生成
+        # 【client_session_timeout_secondsについて】
+        # MCPセッション内でツール呼び出しの応答を待つタイムアウト（デフォルト: 5秒）。
+        # params.timeout はHTTP接続のタイムアウトで、ツール実行時間とは別。
+        # Prophet予測（forecast_time_series）は初回のモデルフィッティングに
+        # 10〜30秒かかるため、デフォルト5秒では必ずタイムアウトする。
         async with MCPServerStreamableHttp(
             name="MongoDB Analytics",
             params={"url": f"{MONGODB_MCP_URL}/mcp", "timeout": 30},
             cache_tools_list=True,
+            client_session_timeout_seconds=60,
         ) as mongo_mcp, MCPServerStreamableHttp(
             name="Visualization Tools",
             params={"url": f"{MCP_URL}/mcp", "timeout": 60},
             cache_tools_list=True,
+            client_session_timeout_seconds=120,
         ) as viz_mcp:
             agent = Agent(
                 name="DocumentAssistant",
