@@ -44,6 +44,11 @@ model_list:
       api_key: os.environ/AZURE_API_KEY
       api_base: os.environ/AZURE_API_BASE
       api_version: os.environ/AZURE_API_VERSION
+      # 【drop_params】Azureが認識できないパラメータを自動除外する
+      # OpenAI Agents SDKがMCPツール定義に "namespace" フィールドを含めるが、
+      # Azure OpenAIはこのパラメータを認識できず400エラーになる。
+      # drop_params: true にするとLiteLLMが未対応パラメータを自動的に除外する。
+      drop_params: true
 
   # ---------------------------------------------------------------------------
   # AWS Bedrock (Claude)
