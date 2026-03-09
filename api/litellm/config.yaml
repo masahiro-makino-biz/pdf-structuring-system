@@ -108,6 +108,12 @@ model_list:
 # master_keyは設定しない。
 
 litellm_settings:
+  # 【drop_params】プロバイダーが認識できないパラメータを自動除外する
+  # OpenAI Agents SDKがMCPツール定義に "namespace" フィールドを含めるが、
+  # Azure OpenAIはこのパラメータを認識できず400エラーになる。
+  # グローバルで有効にすることで、全プロバイダーに対して未対応パラメータを除外する。
+  drop_params: true
+
   # ログ設定
   set_verbose: false
 
