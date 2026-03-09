@@ -394,11 +394,21 @@ def create_chart_for_location(
 #
 # =============================================================================
 
-# オレンジ系グラデーション（予測データ用）
-# グレー（実績）とオレンジ（予測）は色覚的にも区別しやすい
+# オレンジ系グラデーション（AI予測データ用）
+# グレー（実績）とオレンジ（AI予測）は色覚的にも区別しやすい
 PREDICTION_PALETTE = [
     "#FF8C00", "#FFA500", "#FF7F50", "#FF6347",
     "#E67E22", "#D2691E", "#CD853F", "#DEB887",
+]
+
+# 青系グラデーション（Prophet統計予測データ用）
+# オレンジ（AI予測）と青（Prophet予測）は色覚的にも区別しやすい
+# 【なぜ青か】
+# - グレー（実績）、オレンジ（AI予測）、青（Prophet予測）の3色は
+#   色覚多様性のある方にも区別しやすい組み合わせ
+PROPHET_PALETTE = [
+    "#1E90FF", "#4169E1", "#6495ED", "#4682B4",
+    "#00BFFF", "#5B9BD5", "#3CB4E5", "#87CEEB",
 ]
 
 
@@ -406,27 +416,37 @@ def create_prediction_chart(
     results: list,
     predictions: list,
     prediction_info: dict = None,
+    prophet_predictions: list = None,
+    prophet_prediction_info: dict = None,
 ) -> dict:
     """
-    実データ + 予測データ を1つのグラフに可視化する（メイン関数）
+    実データ + AI予測 + Prophet予測 を1つのグラフに可視化する（メイン関数）
 
     【処理の流れ】
     1. group_by_measurement_location() で実データを計測箇所ごとにグループ化
-    2. predictions の測定値キー名で、どの計測箇所に属するか振り分ける
-    3. 計測箇所ごとに、実線（実データ）+ 破線（予測）+ 基準値線 のグラフを生成
+    2. predictions / prophet_predictions の測定値キー名で計測箇所に振り分ける
+    3. 計測箇所ごとに、実線（実データ）+ オレンジ破線（AI予測）+ 青点線（Prophet予測）のグラフを生成
 
     Args:
         results: MongoDB findの結果を変換したリスト（visualize_data と同じ形式）
         predictions: AI予測データのリスト
             [{"year": 2025, "values": {"摩耗量・タイヤ①・上": 0.32, ...}}, ...]
-        prediction_info: 予測メタ情報（オプション）
+        prediction_info: AI予測メタ情報（オプション）
             {"method": "線形近似", "threshold_crossing": {"キー名": 2027}, "note": "..."}
+        prophet_predictions: Prophet予測データのリスト（オプション）
+            AI予測と同じ形式。forecast_time_seriesの結果を変換したもの
+        prophet_prediction_info: Prophet予測メタ情報（オプション）
+            {"method": "Prophet統計モデル", "threshold_crossing": {"キー名": 2028}, "trend": "上昇傾向"}
 
     Returns:
         {"success": bool, "charts": [...], "total_locations": int, "prediction_method": str}
     """
     if prediction_info is None:
         prediction_info = {}
+    if prophet_predictions is None:
+        prophet_predictions = []
+    if prophet_prediction_info is None:
+        prophet_prediction_info = {}
 
     # 1. 実データを計測箇所ごとにグループ化（既存関数を再利用）
     location_groups = group_by_measurement_location(results)
@@ -439,27 +459,32 @@ def create_prediction_chart(
         }
 
     # 2. 予測データを計測箇所ごとに振り分ける
-    #    各 location_group の data_points に含まれるキー名と、
-    #    predictions の values のキー名をマッチングする
     prediction_by_location = _assign_predictions_to_locations(
         location_groups, predictions
     )
+    prophet_by_location = _assign_predictions_to_locations(
+        location_groups, prophet_predictions
+    ) if prophet_predictions else {loc: [] for loc in location_groups}
 
     # 3. 計測箇所ごとにグラフを生成
     threshold_crossing = prediction_info.get("threshold_crossing", {})
+    prophet_threshold_crossing = prophet_prediction_info.get("threshold_crossing", {})
     charts = []
 
     for location, group in location_groups.items():
         pred_points = prediction_by_location.get(location, [])
+        prophet_points = prophet_by_location.get(location, [])
 
         result = _create_single_prediction_chart(
             location=location,
             data_points=group["data_points"],
             pred_points=pred_points,
+            prophet_points=prophet_points,
             equipment=group["equipment"],
             equipment_part=group["equipment_part"],
             reference_values=group["reference_values"],
             threshold_crossing=threshold_crossing,
+            prophet_threshold_crossing=prophet_threshold_crossing,
         )
         if result["success"]:
             charts.append(result)
@@ -471,11 +496,18 @@ def create_prediction_chart(
             "charts": []
         }
 
+    # 予測手法の表示（両方ある場合は併記）
+    methods = []
+    if prediction_info.get("method"):
+        methods.append(prediction_info["method"])
+    if prophet_prediction_info.get("method"):
+        methods.append(prophet_prediction_info["method"])
+
     return {
         "success": True,
         "charts": charts,
         "total_locations": len(charts),
-        "prediction_method": prediction_info.get("method", ""),
+        "prediction_method": " + ".join(methods) if methods else "",
     }
 
 
@@ -530,10 +562,12 @@ def _create_single_prediction_chart(
     location: str,
     data_points: list,
     pred_points: list,
+    prophet_points: list = None,
     equipment: str = "",
     equipment_part: str = "",
     reference_values: dict = None,
     threshold_crossing: dict = None,
+    prophet_threshold_crossing: dict = None,
 ) -> dict:
     """
     1つの計測箇所の予測グラフを生成
@@ -558,6 +592,10 @@ def _create_single_prediction_chart(
         reference_values = {}
     if threshold_crossing is None:
         threshold_crossing = {}
+    if prophet_points is None:
+        prophet_points = []
+    if prophet_threshold_crossing is None:
+        prophet_threshold_crossing = {}
 
     fig = go.Figure()
 
@@ -569,11 +607,13 @@ def _create_single_prediction_chart(
     # --- 予測期間の上限チェック ---
     # 予測が長すぎるとX軸が引き延ばされて実データが潰れてしまう。
     # 実データの年数を超えない範囲に予測データをカットする。
+    actual_years = actual_df["year"].unique()
+    actual_span = int(actual_years.max()) - int(actual_years.min()) + 1
+    max_pred_year = int(actual_years.max()) + max(actual_span, 3)
     if pred_points:
-        actual_years = actual_df["year"].unique()
-        actual_span = int(actual_years.max()) - int(actual_years.min()) + 1
-        max_pred_year = int(actual_years.max()) + max(actual_span, 3)
         pred_points = [p for p in pred_points if p["year"] <= max_pred_year]
+    if prophet_points:
+        prophet_points = [p for p in prophet_points if p["year"] <= max_pred_year]
 
     # グレー系パレット（既存グラフと同じ）
     gray_palette = [
@@ -630,12 +670,47 @@ def _create_single_prediction_chart(
                 hovertemplate=f"予測: {key}<br>年度: %{{x}}<br>予測値: %{{y:.4f}}<extra></extra>",
             ))
 
+    # --- Prophet予測データを測定値キーごとにグループ化して描画 ---
+    # 【なぜ別ブロックか】
+    # AI予測（オレンジ破線）とProphet予測（青点線）を視覚的に区別するため、
+    # 色（PROPHET_PALETTE）と線種（dot）を変えて別トレースとして追加する。
+    if prophet_points:
+        prophet_df = pd.DataFrame(prophet_points)
+        prophet_df = prophet_df.sort_values("year")
+        prophet_keys = prophet_df["key"].unique().tolist()
+
+        for i, key in enumerate(prophet_keys):
+            key_prophet = prophet_df[prophet_df["key"] == key].sort_values("year")
+            color = PROPHET_PALETTE[i % len(PROPHET_PALETTE)]
+
+            # 実データの最終点を予測線の先頭に追加（線をつなげるため）
+            x_vals = key_prophet["year"].astype(str).tolist()
+            y_vals = key_prophet["value"].tolist()
+
+            actual_key_data = actual_df[actual_df["key"] == key].sort_values("year")
+            if not actual_key_data.empty:
+                last_year = str(int(actual_key_data["year"].iloc[-1]))
+                last_value = actual_key_data["value"].iloc[-1]
+                x_vals = [last_year] + x_vals
+                y_vals = [last_value] + y_vals
+
+            fig.add_trace(go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode="lines+markers",
+                name=f"Prophet: {key}",
+                line=dict(color=color, width=2, dash="dot"),
+                marker=dict(size=7, symbol="square", color=color),
+                hovertemplate=f"Prophet: {key}<br>年度: %{{x}}<br>予測値: %{{y:.4f}}<extra></extra>",
+            ))
+
     # --- 基準値の水平線（既存グラフと同じ赤い破線） ---
     if reference_values:
-        # X軸の全範囲（実データ + 予測データ）を計算
+        # X軸の全範囲（実データ + AI予測 + Prophet予測）を計算
         all_years = sorted(set(
             actual_df["year"].astype(str).tolist()
             + ([str(p["year"]) for p in pred_points] if pred_points else [])
+            + ([str(p["year"]) for p in prophet_points] if prophet_points else [])
         ))
         for ref_key, ref_val in reference_values.items():
             fig.add_trace(go.Scatter(
@@ -652,14 +727,22 @@ def _create_single_prediction_chart(
     # add_shape() で垂直線を描くと、X軸にその年度がカテゴリとして追加され、
     # グラフ全体が引き延ばされて実データが潰れてしまう。
     # そのため、常にグラフ右上のテキスト注釈として表示する。
+    #
+    # 【デュアル予測対応】
+    # AI予測とProphet予測の両方の超過年を表示する。
+    # どちらの予測かラベルを付けて区別する。
+    crossing_texts = []
     if threshold_crossing:
-        # 複数キーの超過予測年をまとめて表示（重複年はまとめる）
         unique_years = sorted(set(threshold_crossing.values()))
-        crossing_text = "  ".join(f"超過予測: {y}年" for y in unique_years)
+        crossing_texts.extend(f"AI超過予測: {y}年" for y in unique_years)
+    if prophet_threshold_crossing:
+        unique_years = sorted(set(prophet_threshold_crossing.values()))
+        crossing_texts.extend(f"Prophet超過予測: {y}年" for y in unique_years)
+    if crossing_texts:
         fig.add_annotation(
             xref="paper", yref="paper",
             x=0.98, y=0.98,
-            text=crossing_text,
+            text="  ".join(crossing_texts),
             showarrow=False,
             font=dict(size=12, color="red", family=JAPANESE_FONT),
             xanchor="right", yanchor="top",
@@ -701,6 +784,7 @@ def _create_single_prediction_chart(
 
     actual_count = len(actual_df)
     pred_count = len(pred_points) if pred_points else 0
+    prophet_count = len(prophet_points) if prophet_points else 0
 
     return {
         "success": True,
@@ -709,7 +793,9 @@ def _create_single_prediction_chart(
         "location": location,
         "actual_data_points": actual_count,
         "predicted_data_points": pred_count,
+        "prophet_predicted_data_points": prophet_count,
         "threshold_crossing": threshold_crossing,
+        "prophet_threshold_crossing": prophet_threshold_crossing,
         "reference_values": reference_values,
     }
 

@@ -211,17 +211,19 @@ find(database="pdf_system", collection="pages_default",
 
 ---
 
-## 6. 予測分析（visualize_prediction）
+## 6. 予測分析（デュアル予測: AI + Prophet）
 
 「予測して」「将来の傾向を見せて」「いつ基準値を超えるか」等と言われたら、以下の手順で予測グラフを生成する。
+**2つの予測を同時に実行して1つのグラフに表示する**（AI線形予測=オレンジ破線、Prophet統計予測=青点線）。
 
-### 手順
-1. **データ取得**: 2段階検索で対象データをfindで取得する（通常のグラフ生成と同じ手順）
-2. **データ分析**: 取得した測定値の年度ごとの変化を分析する
-3. **予測値生成**: 将来の年度ごとの予測値をJSON形式で生成する
-4. **グラフ生成**: visualize_prediction ツールに実データ + 予測データを渡す
+### 手順（4ステップ）
 
-### 予測の方法
+1. **データ取得**: 2段階検索でfind実行（通常のグラフ生成と同じ手順）
+2. **AI予測**: 取得データのトレンドを分析し、predicted_data を自分で生成する
+3. **Prophet予測**: 測定値キーごとに forecast_time_series を呼び出す
+4. **グラフ生成**: visualize_prediction に actual_data + predicted_data + prophet_predicted_data をすべて渡す
+
+### Step 2: AI予測（自分で計算する部分）
 
 取得した年度別データから以下を判定して予測値を計算すること:
 
@@ -237,13 +239,38 @@ find(database="pdf_system", collection="pages_default",
 - 基準値がない場合は、「基準値がないため超過予測はできません」と伝え、トレンドのみ表示する
 - 横ばい傾向の場合は、「値は安定しており、基準値超過の兆候は見られません」と伝える
 
+### Step 3: Prophet予測（forecast_time_series を呼び出す）
+
+findの結果から、各測定値キーの年度別データを抽出して forecast_time_series に渡す。
+
+```
+forecast_time_series(
+    ds='["2018-01-01", "2019-01-01", "2020-01-01"]',
+    y='[0.10, 0.16, 0.22]',
+    periods=5,
+    upper_limit=0.5  ← 基準値があれば渡す
+)
+```
+
+- ds: 各年度の1月1日を日付形式で渡す（例: "2020-01-01"）
+- y: 対応する測定値を数値リストで渡す
+- periods: AI予測と同じ期間数を指定する
+- upper_limit: 基準値があれば渡す（超過年の判定に使用）
+- **測定値キーが複数ある場合、各キーごとに個別に呼び出す**
+
+forecast_time_series の結果を prophet_predicted_data の形式に変換する:
+```
+結果のforecast配列から将来分（実データより後の年度）を取り出し:
+[{"year": 2025, "values": {"キー名": yhat値}}, ...]
+```
+
 ### 予測期間
 
 - ユーザーが「5年後まで」等と指定した場合: その期間まで予測する
 - 指定がない場合: **最大5年先まで**。基準値超過が5年以内に予測される場合は超過年+1年まで
 - グラフが見づらくなるので、予測期間は実データの期間を超えないようにする
 
-### predicted_data の形式
+### predicted_data / prophet_predicted_data の形式（どちらも同じ形式）
 
 ```json
 [
@@ -255,7 +282,7 @@ find(database="pdf_system", collection="pages_default",
 - year: 予測年度（実データの最終年度の翌年から開始）
 - values: 測定値キー名と予測値のペア。**キー名はfindの結果の測定値キーと完全に一致させること**
 
-### prediction_info の形式
+### prediction_info / prophet_prediction_info の形式
 
 ```json
 {
@@ -265,23 +292,27 @@ find(database="pdf_system", collection="pages_default",
 }
 ```
 
-- method: 予測手法の説明（"線形近似" など）
+- method: 予測手法の説明（AI: "線形近似"、Prophet: "Prophet統計モデル"）
 - threshold_crossing: 基準値を超過すると予測される年度（キー名: 年度）。超過しないキーは省略
-- note: トレンドの簡単な説明
+- note/trend: トレンドの簡単な説明
 
 ### visualize_prediction の呼び出し
 
 ```
 visualize_prediction(
     actual_data="[findの結果のJSON]",
-    predicted_data="[予測データのJSON]",
-    prediction_info="[メタ情報のJSON]"
+    predicted_data="[AI予測データのJSON]",
+    prediction_info="[AI予測メタ情報のJSON]",
+    prophet_predicted_data="[Prophet予測データのJSON]",
+    prophet_prediction_info="[ProphetメタのJSON]"
 )
 ```
 
-- actual_data: findの戻り値をそのまま渡す（visualize_dataと同じルール: 加工禁止）
+- actual_data: findの戻り値をそのまま渡す（加工禁止）
 - predicted_data: AIが生成した予測JSON
-- prediction_info: メタ情報（基準値超過年がある場合は必ず含める）
+- prediction_info: AI予測のメタ情報
+- prophet_predicted_data: forecast_time_seriesの結果を変換したJSON
+- prophet_prediction_info: Prophet予測のメタ情報
 
 ### visualize_data と visualize_prediction の使い分け
 
@@ -295,10 +326,11 @@ visualize_prediction(
 ### 回答時のルール
 
 予測グラフを生成した後、以下をテキストで補足すること:
-1. 予測手法（「直近のデータから線形近似で予測しました」など）
-2. 基準値超過が予測される場合はその年度
-3. データが少ない場合は精度に関する注意
-4. グラフパスは通常のグラフと同じルール（パスだけを記載、ラベルなし）"""
+1. **2つの予測手法を説明**:「AI線形近似（オレンジ破線）とProphet統計モデル（青点線）で予測しました」
+2. **両方の超過予測年を比較**: 「AI予測では2027年、Prophet予測では2028年に基準値超過の可能性」
+3. **結果の違いの解釈**: 2つの結果が異なる場合、なぜ違うのか簡潔に説明する
+4. データが少ない場合は精度に関する注意
+5. グラフパスは通常のグラフと同じルール（パスだけを記載、ラベルなし）"""
 
 # =============================================================================
 # チャット履歴管理

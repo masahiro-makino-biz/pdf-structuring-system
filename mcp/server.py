@@ -154,21 +154,28 @@ async def visualize_prediction(
     actual_data: str,
     predicted_data: str,
     prediction_info: str = None,
+    prophet_predicted_data: str = None,
+    prophet_prediction_info: str = None,
 ) -> str:
     """
-    実データ + AI予測データ を1つのグラフに可視化する（予測グラフ専用）
+    実データ + AI予測データ + Prophet予測データ を1つのグラフに可視化する（予測グラフ専用）
 
     【使い方】
     1. MongoDB MCPのfindで実データを取得する
-    2. AIが実データのトレンドを分析して予測データを生成する
-    3. actual_data にfindの結果、predicted_data にAI予測結果を渡す
+    2. AIが実データのトレンドを分析して予測データを生成する（predicted_data）
+    3. forecast_time_seriesでProphet予測を実行する（prophet_predicted_data）
+    4. actual_data + predicted_data + prophet_predicted_data をこのツールに渡す
 
     Args:
         actual_data: MongoDB findの結果（JSON文字列）。visualize_dataと同じ形式
         predicted_data: AI予測データ（JSON文字列）。形式:
             [{"year": 2025, "values": {"摩耗量・タイヤ①・上": 0.32}}, ...]
-        prediction_info: 予測メタ情報（JSON文字列、オプション）。形式:
+        prediction_info: AI予測メタ情報（JSON文字列、オプション）。形式:
             {"method": "線形近似", "threshold_crossing": {"キー名": 2027}, "note": "..."}
+        prophet_predicted_data: Prophet予測データ（JSON文字列、オプション）。形式:
+            [{"year": 2025, "values": {"摩耗量・タイヤ①・上": 0.35}}, ...]
+        prophet_prediction_info: Prophet予測メタ情報（JSON文字列、オプション）。形式:
+            {"method": "Prophet統計モデル", "threshold_crossing": {"キー名": 2028}, "trend": "上昇傾向"}
 
     Returns:
         グラフHTMLファイルパスを含むJSON文字列
@@ -232,9 +239,28 @@ async def visualize_prediction(
         except json.JSONDecodeError:
             pass
 
+    # --- prophet_predicted_data のパース（オプション） ---
+    prophet_predictions = []
+    if prophet_predicted_data:
+        try:
+            prophet_predictions = json.loads(prophet_predicted_data)
+        except json.JSONDecodeError as e:
+            print(f"[visualize_prediction] prophet_predicted_data JSONパースエラー: {e}", flush=True)
+        if not isinstance(prophet_predictions, list):
+            prophet_predictions = [prophet_predictions]
+
+    # --- prophet_prediction_info のパース（オプション） ---
+    prophet_info = {}
+    if prophet_prediction_info:
+        try:
+            prophet_info = json.loads(prophet_prediction_info)
+        except json.JSONDecodeError:
+            pass
+
     print(
         f"[visualize_prediction] 実データ: {len(results)}件, "
-        f"予測年数: {len(predictions)}年分",
+        f"AI予測: {len(predictions)}年分, "
+        f"Prophet予測: {len(prophet_predictions)}年分",
         flush=True
     )
 
@@ -244,6 +270,8 @@ async def visualize_prediction(
             results=results,
             predictions=predictions,
             prediction_info=info,
+            prophet_predictions=prophet_predictions,
+            prophet_prediction_info=prophet_info,
         )
         print(f"[visualize_prediction] 完了: {json.dumps(result, ensure_ascii=False)[:300]}", flush=True)
         result["reference_images"] = reference_images
@@ -256,6 +284,134 @@ async def visualize_prediction(
             "charts": []
         }, ensure_ascii=False)
 
+    return json.dumps(result, ensure_ascii=False)
+
+
+# =============================================================================
+# Prophet統計予測ツール
+# =============================================================================
+@mcp.tool()
+async def forecast_time_series(
+    ds: str,
+    y: str,
+    periods: int = 5,
+    upper_limit: float = None,
+    lower_limit: float = None,
+) -> str:
+    """
+    Meta Prophetによる時系列予測を実行する（統計モデルベース）
+
+    【使い方】
+    1. MongoDB MCPのfindで年度別の測定値データを取得する
+    2. ds（日付リスト）とy（測定値リスト）を渡す
+    3. 予測結果をvisualize_predictionのprophet_predicted_dataに渡してグラフ化する
+
+    Args:
+        ds: 日付のリスト（JSON文字列）。例: '["2018-01-01", "2019-01-01", "2020-01-01"]'
+        y: 測定値のリスト（JSON文字列）。dsと同じ長さ。例: '[0.10, 0.16, 0.22]'
+        periods: 予測する将来の期間数（デフォルト: 5）
+        upper_limit: 上限値（基準値）。超過する予測値にフラグを立てる
+        lower_limit: 下限値。下回る予測値にフラグを立てる
+
+    Returns:
+        予測結果のJSON。forecast配列（ds, yhat, yhat_lower, yhat_upper, status）と
+        メタ情報（トレンド方向、超過年度など）を含む
+    """
+    import pandas as pd
+    from prophet import Prophet
+
+    print(f"[forecast_time_series] 開始: periods={periods}, upper_limit={upper_limit}", flush=True)
+
+    # パラメータのパース
+    try:
+        dates = json.loads(ds)
+        values = json.loads(y)
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "success": False,
+            "error": f"パラメータのJSON解析エラー: {str(e)}"
+        }, ensure_ascii=False)
+
+    if len(dates) != len(values):
+        return json.dumps({
+            "success": False,
+            "error": f"dsとyの長さが一致しません（ds={len(dates)}, y={len(values)}）"
+        }, ensure_ascii=False)
+
+    if len(dates) < 2:
+        return json.dumps({
+            "success": False,
+            "error": "データが2点未満のため予測できません"
+        }, ensure_ascii=False)
+
+    # Prophet用DataFrameを作成
+    df = pd.DataFrame({"ds": dates, "y": values})
+    df["ds"] = pd.to_datetime(df["ds"])
+
+    # Prophetモデルで予測を実行
+    try:
+        model = Prophet()
+        model.fit(df)
+        future = model.make_future_dataframe(periods=periods, freq="YS")
+        forecast = model.predict(future)
+    except Exception as e:
+        print(f"[forecast_time_series] Prophetエラー: {e}", flush=True)
+        return json.dumps({
+            "success": False,
+            "error": f"Prophet予測エラー: {str(e)}"
+        }, ensure_ascii=False)
+
+    # 予測結果を整形
+    out = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+    out["ds"] = out["ds"].dt.strftime("%Y-%m-%d")
+    out["yhat"] = out["yhat"].round(4)
+    out["yhat_lower"] = out["yhat_lower"].round(4)
+    out["yhat_upper"] = out["yhat_upper"].round(4)
+
+    # 基準値チェック
+    first_exceed_year = None
+    statuses = []
+    for _, row in out.iterrows():
+        yhat_val = row["yhat"]
+        if upper_limit is not None and yhat_val > upper_limit:
+            statuses.append("EXCEEDS_UPPER")
+            if first_exceed_year is None:
+                first_exceed_year = row["ds"][:4]
+        elif lower_limit is not None and yhat_val < lower_limit:
+            statuses.append("BELOW_LOWER")
+        else:
+            statuses.append("OK")
+    out["status"] = statuses
+
+    # トレンド方向の判定
+    future_only = forecast.iloc[len(df):]
+    hist_mean = df["y"].mean()
+    if len(future_only) > 0 and hist_mean != 0:
+        fcst_mean = future_only["yhat"].mean()
+        change_pct = ((fcst_mean - hist_mean) / abs(hist_mean)) * 100
+        if change_pct > 5:
+            trend = f"上昇傾向（+{change_pct:.1f}%）"
+        elif change_pct < -5:
+            trend = f"下降傾向（{change_pct:.1f}%）"
+        else:
+            trend = "横ばい"
+    else:
+        trend = "判定不能"
+
+    result = {
+        "success": True,
+        "forecast": out.to_dict(orient="records"),
+        "meta": {
+            "periods": periods,
+            "n_history": len(df),
+            "hist_start": df["ds"].min().strftime("%Y-%m-%d"),
+            "hist_end": df["ds"].max().strftime("%Y-%m-%d"),
+            "trend": trend,
+            "first_exceed_year": first_exceed_year,
+        }
+    }
+
+    print(f"[forecast_time_series] 完了: trend={trend}, exceed={first_exceed_year}", flush=True)
     return json.dumps(result, ensure_ascii=False)
 
 
