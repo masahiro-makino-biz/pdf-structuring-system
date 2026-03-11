@@ -68,3 +68,11 @@ pandas>=2.0.0
 #   - scikit-learn: 汎用的だが時系列特化ではない
 #   - statsmodels(ARIMA): 古典的だが設定が複雑
 prophet>=1.1.5
+
+# 【httpx】非同期HTTPクライアント
+# 【用途】
+#   - test_iframe MCPツールからWatson Assistant APIを呼び出す
+# 【なぜhttpxか】
+#   - async/await対応（FastMCPのasyncツール内で使える）
+#   - requestsはasync非対応
+httpx>=0.25.0

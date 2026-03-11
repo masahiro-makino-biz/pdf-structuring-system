@@ -172,6 +172,9 @@ services:
       - MONGO_URL=mongodb://mongo:27017  # MongoDBへの接続先（構造化データ保存用）
       - PYTHONIOENCODING=utf-8  # 日本語ファイル名対応
       - LANG=C.UTF-8
+      - WA_URL=${WA_URL:-}
+      - WA_API_KEY=${WA_API_KEY:-}
+      - WA_ASSISTANT_ID=${WA_ASSISTANT_ID:-}
     depends_on:
       - mongo
     restart: unless-stopped

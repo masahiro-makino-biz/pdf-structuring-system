@@ -416,6 +416,105 @@ async def forecast_time_series(
 
 
 # =============================================================================
+# iframeテスト用ツール（WxO検証用）
+# =============================================================================
+@mcp.tool()
+async def test_iframe(
+    url: str = "https://plotly.com/~PlotBot/0.embed",
+) -> str:
+    """
+    Watson Assistant APIを呼び出し、iframe形式でURLを表示するテスト用ツール
+
+    【検証の目的】
+    Agent → MCPツール → Assistant API → iframe response_type
+    この経路でiframeがWxOチャット上に表示されるかを確認する
+
+    Args:
+        url: iframe に埋め込むURL（デフォルト: Plotlyサンプルグラフ）
+
+    Returns:
+        Watson Assistant の応答（iframe response_type を含むJSON）
+    """
+    import httpx
+
+    print(f"[test_iframe] URL: {url}", flush=True)
+
+    # Watson Assistant API の設定（環境変数から取得）
+    import os
+    assistant_url = os.environ.get("WA_URL", "")
+    assistant_api_key = os.environ.get("WA_API_KEY", "")
+    assistant_id = os.environ.get("WA_ASSISTANT_ID", "")
+    api_version = "2023-06-15"
+
+    if not all([assistant_url, assistant_api_key, assistant_id]):
+        return json.dumps({
+            "success": False,
+            "error": "Watson Assistant の環境変数が未設定です（WA_URL, WA_API_KEY, WA_ASSISTANT_ID）",
+        }, ensure_ascii=False)
+
+    # Watson Assistant V2 API: メッセージ送信
+    # セッション作成 → メッセージ送信 の2ステップ
+    try:
+        async with httpx.AsyncClient() as client:
+            # 1. セッション作成
+            session_resp = await client.post(
+                f"{assistant_url}/v2/assistants/{assistant_id}/sessions",
+                params={"version": api_version},
+                auth=("apikey", assistant_api_key),
+                headers={"Content-Type": "application/json"},
+            )
+            session_resp.raise_for_status()
+            session_id = session_resp.json()["session_id"]
+            print(f"[test_iframe] セッション作成: {session_id}", flush=True)
+
+            # 2. メッセージ送信（context経由でURLをAssistantの変数にセット）
+            message_resp = await client.post(
+                f"{assistant_url}/v2/assistants/{assistant_id}/sessions/{session_id}/message",
+                params={"version": api_version},
+                auth=("apikey", assistant_api_key),
+                headers={"Content-Type": "application/json"},
+                json={
+                    "input": {
+                        "message_type": "text",
+                        "text": "show_chart",
+                    },
+                    "context": {
+                        "skills": {
+                            "main skill": {
+                                "user_defined": {
+                                    "chat_url": url,
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+            message_resp.raise_for_status()
+            response_data = message_resp.json()
+
+            print(f"[test_iframe] Assistant応答: {json.dumps(response_data, ensure_ascii=False)[:500]}", flush=True)
+
+            # 3. セッション削除
+            await client.delete(
+                f"{assistant_url}/v2/assistants/{assistant_id}/sessions/{session_id}",
+                params={"version": api_version},
+                auth=("apikey", assistant_api_key),
+            )
+
+    except Exception as e:
+        print(f"[test_iframe] エラー: {e}", flush=True)
+        return json.dumps({
+            "success": False,
+            "error": f"Watson Assistant API エラー: {str(e)}",
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "success": True,
+        "assistant_response": response_data,
+    }, ensure_ascii=False)
+
+
+# =============================================================================
 # FastAPI + MCPマウント
 # =============================================================================
 from fastapi import FastAPI
