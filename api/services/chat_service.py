@@ -236,12 +236,13 @@ find(database="pdf_system", collection="pages_default",
 「予測して」「将来の傾向を見せて」「いつ基準値を超えるか」等と言われたら、以下の手順で予測グラフを生成する。
 **2つの予測を同時に実行して1つのグラフに表示する**（AI線形予測=オレンジ破線、Prophet統計予測=青点線）。
 
-### 手順（4ステップ）
+### 手順（5ステップ）
 
 1. **データ取得**: 2段階検索でfind実行（通常のグラフ生成と同じ手順）
 2. **AI予測**: 取得データのトレンドを分析し、predicted_data を自分で生成する
 3. **Prophet予測**: 測定値キーごとに forecast_time_series を呼び出す
-4. **グラフ生成**: visualize_prediction に actual_data + predicted_data + prophet_predicted_data をすべて渡す
+4. **カーブフィット予測**: 測定値キーごとに forecast_curve_fit を呼び出す
+5. **グラフ生成**: visualize_prediction に actual_data + 各予測データ をすべて渡す
 
 ### Step 2: AI予測（自分で計算する部分）
 
@@ -262,6 +263,7 @@ find(database="pdf_system", collection="pages_default",
 ### Step 3: Prophet予測（forecast_time_series を呼び出す）
 
 findの結果から、各測定値キーの年度別データを抽出して forecast_time_series に渡す。
+**forecast_curve_fit も同じds/yパラメータで呼び出せるので、Step 4と並行して実行可能。**
 
 ```
 forecast_time_series(
@@ -281,6 +283,29 @@ forecast_time_series(
 forecast_time_series の結果を prophet_predicted_data の形式に変換する:
 ```
 結果のforecast配列から将来分（実データより後の年度）を取り出し:
+[{"year": 2025, "values": {"キー名": yhat値}}, ...]
+```
+
+### Step 4: カーブフィット予測（forecast_curve_fit を呼び出す）
+
+forecast_time_series と同じ ds/y パラメータを使って forecast_curve_fit を呼び出す。
+
+```
+forecast_curve_fit(
+    ds='["2018-01-01", "2019-01-01", "2020-01-01"]',
+    y='[0.10, 0.16, 0.22]',
+    periods=5,
+    upper_limit=0.5  ← 基準値があれば渡す
+)
+```
+
+- ds, y, periods, upper_limit: forecast_time_series と同じ値を渡す
+- repair_drop_ratio: 改修検出の閾値（デフォルト0.5=50%低下で改修と判定）。通常は省略でOK
+- **測定値キーが複数ある場合、各キーごとに個別に呼び出す**（forecast_time_seriesと同じ）
+
+forecast_curve_fit の結果を curvefit_predicted_data の形式に変換する:
+```
+結果のforecast配列から:
 [{"year": 2025, "values": {"キー名": yhat値}}, ...]
 ```
 
@@ -324,7 +349,9 @@ visualize_prediction(
     predicted_data="[AI予測データのJSON]",
     prediction_info="[AI予測メタ情報のJSON]",
     prophet_predicted_data="[Prophet予測データのJSON]",
-    prophet_prediction_info="[ProphetメタのJSON]"
+    prophet_prediction_info="[ProphetメタのJSON]",
+    curvefit_predicted_data="[カーブフィット予測データのJSON]",
+    curvefit_prediction_info="[カーブフィットメタのJSON]"
 )
 ```
 
@@ -333,6 +360,8 @@ visualize_prediction(
 - prediction_info: AI予測のメタ情報
 - prophet_predicted_data: forecast_time_seriesの結果を変換したJSON
 - prophet_prediction_info: Prophet予測のメタ情報
+- curvefit_predicted_data: forecast_curve_fitの結果を変換したJSON
+- curvefit_prediction_info: カーブフィット予測のメタ情報
 
 ### visualize_data と visualize_prediction の使い分け
 
@@ -346,11 +375,15 @@ visualize_prediction(
 ### 回答時のルール
 
 予測グラフを生成した後、以下をテキストで補足すること:
-1. **2つの予測手法を説明**:「AI線形近似（オレンジ破線）とProphet統計モデル（青点線）で予測しました」
-2. **両方の超過予測年を比較**: 「AI予測では2027年、Prophet予測では2028年に基準値超過の可能性」
-3. **結果の違いの解釈**: 2つの結果が異なる場合、なぜ違うのか簡潔に説明する
-4. データが少ない場合は精度に関する注意
-5. グラフパスは通常のグラフと同じルール（パスだけを記載、ラベルなし）"""
+1. **3つの予測手法を説明**:
+   - AI線形近似（オレンジ破線）: AIが変化率から予測
+   - Prophet統計モデル（青点線）: 時系列統計モデルで予測
+   - カーブフィット（緑一点鎖線）: 改修サイクルを除外し最適カーブで予測
+2. **各予測の超過予測年を比較**: 「AI予測では2027年、Prophet予測では2028年、カーブフィット予測では2027年に基準値超過の可能性」
+3. **結果の違いの解釈**: 各予測結果が異なる場合、なぜ違うのか簡潔に説明する
+4. **カーブフィットの補足**: 改修年が検出された場合は「○○年の改修を検出し除外」、使用カーブ種類（線形/指数/対数）も説明する
+5. データが少ない場合は精度に関する注意
+6. グラフパスは通常のグラフと同じルール（パスだけを記載、ラベルなし）"""
 
 # =============================================================================
 # チャット履歴管理

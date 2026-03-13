@@ -411,6 +411,16 @@ PROPHET_PALETTE = [
     "#00BFFF", "#5B9BD5", "#3CB4E5", "#87CEEB",
 ]
 
+# 緑系グラデーション（カーブフィット予測データ用）
+# 【なぜ緑か】
+# - グレー（実績）、オレンジ（AI予測）、青（Prophet予測）、緑（カーブフィット予測）の4色は
+#   色覚多様性のある方にも区別しやすい組み合わせ
+# - 線種も dashdot にすることで色覚に頼らず区別できる
+CURVEFIT_PALETTE = [
+    "#2ECC71", "#27AE60", "#1ABC9C", "#16A085",
+    "#00C853", "#009688", "#4CAF50", "#66BB6A",
+]
+
 
 def create_prediction_chart(
     results: list,
@@ -418,14 +428,17 @@ def create_prediction_chart(
     prediction_info: dict = None,
     prophet_predictions: list = None,
     prophet_prediction_info: dict = None,
+    curvefit_predictions: list = None,
+    curvefit_prediction_info: dict = None,
 ) -> dict:
     """
-    実データ + AI予測 + Prophet予測 を1つのグラフに可視化する（メイン関数）
+    実データ + AI予測 + Prophet予測 + カーブフィット予測 を1つのグラフに可視化する（メイン関数）
 
     【処理の流れ】
     1. group_by_measurement_location() で実データを計測箇所ごとにグループ化
-    2. predictions / prophet_predictions の測定値キー名で計測箇所に振り分ける
-    3. 計測箇所ごとに、実線（実データ）+ オレンジ破線（AI予測）+ 青点線（Prophet予測）のグラフを生成
+    2. predictions / prophet_predictions / curvefit_predictions の測定値キー名で計測箇所に振り分ける
+    3. 計測箇所ごとに、実線（実データ）+ オレンジ破線（AI予測）+ 青点線（Prophet予測）
+       + 緑一点鎖線（カーブフィット予測）のグラフを生成
 
     Args:
         results: MongoDB findの結果を変換したリスト（visualize_data と同じ形式）
@@ -437,6 +450,10 @@ def create_prediction_chart(
             AI予測と同じ形式。forecast_time_seriesの結果を変換したもの
         prophet_prediction_info: Prophet予測メタ情報（オプション）
             {"method": "Prophet統計モデル", "threshold_crossing": {"キー名": 2028}, "trend": "上昇傾向"}
+        curvefit_predictions: カーブフィット予測データのリスト（オプション）
+            AI予測と同じ形式。forecast_curve_fitの結果を変換したもの
+        curvefit_prediction_info: カーブフィット予測メタ情報（オプション）
+            {"method": "カーブフィット（指数）", "threshold_crossing": {"キー名": 2027}, "repair_years": [2022]}
 
     Returns:
         {"success": bool, "charts": [...], "total_locations": int, "prediction_method": str}
@@ -447,6 +464,10 @@ def create_prediction_chart(
         prophet_predictions = []
     if prophet_prediction_info is None:
         prophet_prediction_info = {}
+    if curvefit_predictions is None:
+        curvefit_predictions = []
+    if curvefit_prediction_info is None:
+        curvefit_prediction_info = {}
 
     # 1. 実データを計測箇所ごとにグループ化（既存関数を再利用）
     location_groups = group_by_measurement_location(results)
@@ -465,26 +486,33 @@ def create_prediction_chart(
     prophet_by_location = _assign_predictions_to_locations(
         location_groups, prophet_predictions
     ) if prophet_predictions else {loc: [] for loc in location_groups}
+    curvefit_by_location = _assign_predictions_to_locations(
+        location_groups, curvefit_predictions
+    ) if curvefit_predictions else {loc: [] for loc in location_groups}
 
     # 3. 計測箇所ごとにグラフを生成
     threshold_crossing = prediction_info.get("threshold_crossing", {})
     prophet_threshold_crossing = prophet_prediction_info.get("threshold_crossing", {})
+    curvefit_threshold_crossing = curvefit_prediction_info.get("threshold_crossing", {})
     charts = []
 
     for location, group in location_groups.items():
         pred_points = prediction_by_location.get(location, [])
         prophet_points = prophet_by_location.get(location, [])
+        curvefit_points = curvefit_by_location.get(location, [])
 
         result = _create_single_prediction_chart(
             location=location,
             data_points=group["data_points"],
             pred_points=pred_points,
             prophet_points=prophet_points,
+            curvefit_points=curvefit_points,
             equipment=group["equipment"],
             equipment_part=group["equipment_part"],
             reference_values=group["reference_values"],
             threshold_crossing=threshold_crossing,
             prophet_threshold_crossing=prophet_threshold_crossing,
+            curvefit_threshold_crossing=curvefit_threshold_crossing,
         )
         if result["success"]:
             charts.append(result)
@@ -496,12 +524,14 @@ def create_prediction_chart(
             "charts": []
         }
 
-    # 予測手法の表示（両方ある場合は併記）
+    # 予測手法の表示（複数ある場合は併記）
     methods = []
     if prediction_info.get("method"):
         methods.append(prediction_info["method"])
     if prophet_prediction_info.get("method"):
         methods.append(prophet_prediction_info["method"])
+    if curvefit_prediction_info.get("method"):
+        methods.append(curvefit_prediction_info["method"])
 
     return {
         "success": True,
@@ -563,11 +593,13 @@ def _create_single_prediction_chart(
     data_points: list,
     pred_points: list,
     prophet_points: list = None,
+    curvefit_points: list = None,
     equipment: str = "",
     equipment_part: str = "",
     reference_values: dict = None,
     threshold_crossing: dict = None,
     prophet_threshold_crossing: dict = None,
+    curvefit_threshold_crossing: dict = None,
 ) -> dict:
     """
     1つの計測箇所の予測グラフを生成
@@ -594,8 +626,12 @@ def _create_single_prediction_chart(
         threshold_crossing = {}
     if prophet_points is None:
         prophet_points = []
+    if curvefit_points is None:
+        curvefit_points = []
     if prophet_threshold_crossing is None:
         prophet_threshold_crossing = {}
+    if curvefit_threshold_crossing is None:
+        curvefit_threshold_crossing = {}
 
     fig = go.Figure()
 
@@ -614,6 +650,8 @@ def _create_single_prediction_chart(
         pred_points = [p for p in pred_points if p["year"] <= max_pred_year]
     if prophet_points:
         prophet_points = [p for p in prophet_points if p["year"] <= max_pred_year]
+    if curvefit_points:
+        curvefit_points = [p for p in curvefit_points if p["year"] <= max_pred_year]
 
     # グレー系パレット（既存グラフと同じ）
     gray_palette = [
@@ -704,13 +742,48 @@ def _create_single_prediction_chart(
                 hovertemplate=f"Prophet: {key}<br>年度: %{{x}}<br>予測値: %{{y:.4f}}<extra></extra>",
             ))
 
+    # --- カーブフィット予測データを測定値キーごとにグループ化して描画 ---
+    # 【なぜ別ブロックか】
+    # AI予測（オレンジ破線）、Prophet予測（青点線）、カーブフィット予測（緑一点鎖線）を
+    # 視覚的に区別するため、色（CURVEFIT_PALETTE）と線種（dashdot）を変えて描画する。
+    if curvefit_points:
+        curvefit_df = pd.DataFrame(curvefit_points)
+        curvefit_df = curvefit_df.sort_values("year")
+        curvefit_keys = curvefit_df["key"].unique().tolist()
+
+        for i, key in enumerate(curvefit_keys):
+            key_curvefit = curvefit_df[curvefit_df["key"] == key].sort_values("year")
+            color = CURVEFIT_PALETTE[i % len(CURVEFIT_PALETTE)]
+
+            # 実データの最終点を予測線の先頭に追加（線をつなげるため）
+            x_vals = key_curvefit["year"].astype(str).tolist()
+            y_vals = key_curvefit["value"].tolist()
+
+            actual_key_data = actual_df[actual_df["key"] == key].sort_values("year")
+            if not actual_key_data.empty:
+                last_year = str(int(actual_key_data["year"].iloc[-1]))
+                last_value = actual_key_data["value"].iloc[-1]
+                x_vals = [last_year] + x_vals
+                y_vals = [last_value] + y_vals
+
+            fig.add_trace(go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode="lines+markers",
+                name=f"カーブフィット: {key}",
+                line=dict(color=color, width=2, dash="dashdot"),
+                marker=dict(size=7, symbol="triangle-up", color=color),
+                hovertemplate=f"カーブフィット: {key}<br>年度: %{{x}}<br>予測値: %{{y:.4f}}<extra></extra>",
+            ))
+
     # --- 基準値の水平線（既存グラフと同じ赤い破線） ---
     if reference_values:
-        # X軸の全範囲（実データ + AI予測 + Prophet予測）を計算
+        # X軸の全範囲（実データ + AI予測 + Prophet予測 + カーブフィット予測）を計算
         all_years = sorted(set(
             actual_df["year"].astype(str).tolist()
             + ([str(p["year"]) for p in pred_points] if pred_points else [])
             + ([str(p["year"]) for p in prophet_points] if prophet_points else [])
+            + ([str(p["year"]) for p in curvefit_points] if curvefit_points else [])
         ))
         for ref_key, ref_val in reference_values.items():
             fig.add_trace(go.Scatter(
@@ -738,6 +811,9 @@ def _create_single_prediction_chart(
     if prophet_threshold_crossing:
         unique_years = sorted(set(prophet_threshold_crossing.values()))
         crossing_texts.extend(f"Prophet超過予測: {y}年" for y in unique_years)
+    if curvefit_threshold_crossing:
+        unique_years = sorted(set(curvefit_threshold_crossing.values()))
+        crossing_texts.extend(f"カーブフィット超過予測: {y}年" for y in unique_years)
     if crossing_texts:
         fig.add_annotation(
             xref="paper", yref="paper",
@@ -785,6 +861,7 @@ def _create_single_prediction_chart(
     actual_count = len(actual_df)
     pred_count = len(pred_points) if pred_points else 0
     prophet_count = len(prophet_points) if prophet_points else 0
+    curvefit_count = len(curvefit_points) if curvefit_points else 0
 
     return {
         "success": True,
@@ -794,8 +871,10 @@ def _create_single_prediction_chart(
         "actual_data_points": actual_count,
         "predicted_data_points": pred_count,
         "prophet_predicted_data_points": prophet_count,
+        "curvefit_predicted_data_points": curvefit_count,
         "threshold_crossing": threshold_crossing,
         "prophet_threshold_crossing": prophet_threshold_crossing,
+        "curvefit_threshold_crossing": curvefit_threshold_crossing,
         "reference_values": reference_values,
     }
 
