@@ -316,6 +316,194 @@ async def visualize_prediction(
 
 
 # =============================================================================
+# 改修検出ヘルパー（全予測ツール共通）
+# =============================================================================
+def _detect_repair_indices(values: list, drop_ratio: float = 0.5) -> list[int]:
+    """
+    前年比で drop_ratio（デフォルト50%）以上の低下があったインデックスを返す。
+    改修により値が急激に回復した年を検出する。
+    """
+    repair_indices = []
+    for i in range(1, len(values)):
+        if values[i - 1] != 0:
+            drop = (values[i - 1] - values[i]) / abs(values[i - 1])
+            if drop >= drop_ratio:
+                repair_indices.append(i)
+    return repair_indices
+
+
+def _trim_to_last_cycle(dates: list, values: list, drop_ratio: float = 0.5) -> tuple[list, list, list[int]]:
+    """
+    改修を検出し、最後の改修以降のデータだけを返す。
+    改修がなければ全データをそのまま返す。
+
+    Returns:
+        (trimmed_dates, trimmed_values, repair_years)
+    """
+    repair_indices = _detect_repair_indices(values, drop_ratio)
+    years = [int(d[:4]) for d in dates]
+    repair_years = [years[i] for i in repair_indices]
+
+    if repair_indices:
+        last_repair = repair_indices[-1]
+        return dates[last_repair:], values[last_repair:], repair_years
+    else:
+        return dates, values, []
+
+
+# =============================================================================
+# 線形回帰予測ツール
+# =============================================================================
+@mcp.tool()
+async def forecast_linear(
+    ds: str,
+    y: str,
+    periods: int = 5,
+    upper_limit: float = None,
+    lower_limit: float = None,
+) -> str:
+    """
+    線形回帰（最小二乗法）で予測する（改修サイクル自動除外）
+
+    【特徴】
+    - 改修（値の急激な回復）を自動検出し、最後の改修以降のデータで直線を当てはめる
+    - 毎回同じ結果が出る（再現性がある）
+    - データが少なくても動作する
+
+    【使い方】
+    1. MongoDB MCPのfindで年度別の測定値データを取得する
+    2. ds（日付リスト）とy（測定値リスト）を渡す
+    3. 予測結果をvisualize_predictionのpredicted_dataに渡してグラフ化する
+
+    Args:
+        ds: 日付のリスト（JSON文字列）。例: '["2018-01-01", "2019-01-01", "2020-01-01"]'
+        y: 測定値のリスト（JSON文字列）。dsと同じ長さ。例: '[0.10, 0.16, 0.22]'
+        periods: 予測する将来の期間数（デフォルト: 5）
+        upper_limit: 上限値（基準値）。超過する予測値にフラグを立てる
+        lower_limit: 下限値。下回る予測値にフラグを立てる
+
+    Returns:
+        予測結果のJSON。forecast配列（ds, yhat, status）とメタ情報（傾き、超過年度など）を含む
+    """
+    import numpy as np
+    from scipy.stats import linregress
+
+    print(f"[forecast_linear] 開始: periods={periods}, upper_limit={upper_limit}", flush=True)
+
+    # パラメータのパース
+    try:
+        dates = json.loads(ds)
+        values = json.loads(y)
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "success": False,
+            "error": f"パラメータのJSON解析エラー: {str(e)}"
+        }, ensure_ascii=False)
+
+    if len(dates) != len(values):
+        return json.dumps({
+            "success": False,
+            "error": f"dsとyの長さが一致しません（ds={len(dates)}, y={len(values)}）"
+        }, ensure_ascii=False)
+
+    if len(dates) < 2:
+        return json.dumps({
+            "success": False,
+            "error": "データが2点未満のため予測できません"
+        }, ensure_ascii=False)
+
+    # 改修検出 → 全サイクルを「改修後n年目」に正規化して全データ活用
+    years = [int(d[:4]) for d in dates]
+    repair_indices = _detect_repair_indices(values)
+    repair_years_list = [years[i] for i in repair_indices]
+
+    # サイクル分割 → 正規化（改修後の経過年数に揃える）
+    cycle_starts = [0] + repair_indices
+    normalized_x = []
+    normalized_y = []
+    for idx, start in enumerate(cycle_starts):
+        end = cycle_starts[idx + 1] if idx + 1 < len(cycle_starts) else len(values)
+        for i in range(start, end):
+            normalized_x.append(i - start)
+            normalized_y.append(values[i])
+
+    if repair_years_list:
+        print(f"[forecast_linear] 改修検出: {repair_years_list} → 正規化して{len(normalized_x)}点で回帰", flush=True)
+
+    normalized_x = np.array(normalized_x, dtype=float)
+    y_vals = np.array(normalized_y, dtype=float)
+
+    # 線形回帰（正規化した経過年数 vs 値）
+    result = linregress(normalized_x, y_vals)
+    slope = result.slope
+    intercept = result.intercept
+    r_squared = result.rvalue ** 2
+
+    print(f"[forecast_linear] 傾き={slope:.6f}/年, 切片={intercept:.4f}, R²={r_squared:.4f}", flush=True)
+
+    # 将来を予測（最後のサイクルの経過年数を起点にする）
+    last_cycle_start = cycle_starts[-1]
+    current_elapsed = len(values) - 1 - last_cycle_start
+    last_year = years[-1]
+    forecast_results = []
+    first_exceed_year = None
+
+    for i in range(1, periods + 1):
+        future_elapsed = current_elapsed + i
+        future_year = last_year + i
+        yhat = float(slope * future_elapsed + intercept)
+        ds_str = f"{future_year}-01-01"
+
+        status = "OK"
+        if upper_limit is not None and yhat > upper_limit:
+            status = "EXCEEDS_UPPER"
+            if first_exceed_year is None:
+                first_exceed_year = str(future_year)
+        elif lower_limit is not None and yhat < lower_limit:
+            status = "BELOW_LOWER"
+
+        forecast_results.append({
+            "ds": ds_str,
+            "yhat": round(yhat, 4),
+            "status": status,
+        })
+
+    # トレンド方向の判定
+    hist_mean = float(np.mean(y_vals))
+    future_values = [f["yhat"] for f in forecast_results]
+    if len(future_values) > 0 and hist_mean != 0:
+        fcst_mean = np.mean(future_values)
+        change_pct = ((fcst_mean - hist_mean) / abs(hist_mean)) * 100
+        if change_pct > 5:
+            trend = f"上昇傾向（+{change_pct:.1f}%）"
+        elif change_pct < -5:
+            trend = f"下降傾向（{change_pct:.1f}%）"
+        else:
+            trend = "横ばい"
+    else:
+        trend = "判定不能"
+
+    result_json = {
+        "success": True,
+        "forecast": forecast_results,
+        "meta": {
+            "method": "線形回帰（最小二乗法）",
+            "slope_per_year": round(slope, 6),
+            "r_squared": round(r_squared, 4),
+            "periods": periods,
+            "n_history": len(values),
+            "n_cycles": len(cycle_starts),
+            "repair_years": repair_years_list,
+            "trend": trend,
+            "first_exceed_year": first_exceed_year,
+        }
+    }
+
+    print(f"[forecast_linear] 完了: slope={slope:.6f}, trend={trend}, exceed={first_exceed_year}, repairs={repair_years_list}", flush=True)
+    return json.dumps(result_json, ensure_ascii=False)
+
+
+# =============================================================================
 # Prophet統計予測ツール
 # =============================================================================
 @mcp.tool()
@@ -327,7 +515,11 @@ async def forecast_time_series(
     lower_limit: float = None,
 ) -> str:
     """
-    Meta Prophetによる時系列予測を実行する（統計モデルベース）
+    Meta Prophetによる時系列予測を実行する（改修サイクル自動除外）
+
+    【特徴】
+    - 改修（値の急激な回復）を自動検出し、最後の改修以降のデータで予測する
+    - 統計モデルベースで季節性やトレンド変化も考慮できる
 
     【使い方】
     1. MongoDB MCPのfindで年度別の測定値データを取得する
@@ -372,8 +564,19 @@ async def forecast_time_series(
             "error": "データが2点未満のため予測できません"
         }, ensure_ascii=False)
 
+    # 改修検出 → 最後の改修以降のデータだけ使う
+    trimmed_dates, trimmed_values, repair_years = _trim_to_last_cycle(dates, values)
+    if repair_years:
+        print(f"[forecast_time_series] 改修検出: {repair_years} → 最後の改修以降 {len(trimmed_dates)}点で予測", flush=True)
+
+    if len(trimmed_dates) < 2:
+        return json.dumps({
+            "success": False,
+            "error": "改修後のデータが2点未満のため予測できません"
+        }, ensure_ascii=False)
+
     # Prophet用DataFrameを作成
-    df = pd.DataFrame({"ds": dates, "y": values})
+    df = pd.DataFrame({"ds": trimmed_dates, "y": trimmed_values})
     df["ds"] = pd.to_datetime(df["ds"])
 
     # Prophetモデルで予測を実行
@@ -432,6 +635,8 @@ async def forecast_time_series(
         "meta": {
             "periods": periods,
             "n_history": len(df),
+            "n_original": len(values),
+            "repair_years": repair_years,
             "hist_start": df["ds"].min().strftime("%Y-%m-%d"),
             "hist_end": df["ds"].max().strftime("%Y-%m-%d"),
             "trend": trend,
@@ -439,7 +644,7 @@ async def forecast_time_series(
         }
     }
 
-    print(f"[forecast_time_series] 完了: trend={trend}, exceed={first_exceed_year}", flush=True)
+    print(f"[forecast_time_series] 完了: trend={trend}, exceed={first_exceed_year}, repairs={repair_years}", flush=True)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -509,15 +714,8 @@ async def forecast_curve_fit(
     # 年を抽出
     years = [int(d[:4]) for d in dates]
 
-    # --- ステップ1: 改修年の検出 ---
-    # 前年比で repair_drop_ratio（デフォルト50%）以上の低下があった年を改修と判定
-    repair_indices = []
-    for i in range(1, len(values)):
-        if values[i - 1] != 0:
-            drop = (values[i - 1] - values[i]) / abs(values[i - 1])
-            if drop >= repair_drop_ratio:
-                repair_indices.append(i)
-
+    # --- ステップ1: 改修年の検出（共通ヘルパー使用） ---
+    repair_indices = _detect_repair_indices(values, repair_drop_ratio)
     repair_years = [years[i] for i in repair_indices]
     print(f"[forecast_curve_fit] 検出した改修年: {repair_years}", flush=True)
 
