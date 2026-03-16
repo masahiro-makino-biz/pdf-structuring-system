@@ -444,21 +444,26 @@ async def test_iframe(
     assistant_url = os.environ.get("WA_URL", "")
     assistant_api_key = os.environ.get("WA_API_KEY", "")
     assistant_id = os.environ.get("WA_ASSISTANT_ID", "")
+    environment_id = os.environ.get("WA_ENVIRONMENT_ID", "")
     api_version = "2023-06-15"
 
-    if not all([assistant_url, assistant_api_key, assistant_id]):
+    if not all([assistant_url, assistant_api_key, assistant_id, environment_id]):
         return json.dumps({
             "success": False,
-            "error": "Watson Assistant の環境変数が未設定です（WA_URL, WA_API_KEY, WA_ASSISTANT_ID）",
+            "error": "Watson Assistant の環境変数が未設定です（WA_URL, WA_API_KEY, WA_ASSISTANT_ID, WA_ENVIRONMENT_ID）",
         }, ensure_ascii=False)
 
     # Watson Assistant V2 API: メッセージ送信
     # セッション作成 → メッセージ送信 の2ステップ
+    # 【注意】新しいAPI形式では environment_id が必要
+    #   旧: /v2/assistants/{id}/sessions
+    #   新: /v2/assistants/{id}/environments/{env_id}/sessions
+    base_path = f"{assistant_url}/v2/assistants/{assistant_id}/environments/{environment_id}"
     try:
         async with httpx.AsyncClient() as client:
             # 1. セッション作成
             session_resp = await client.post(
-                f"{assistant_url}/v2/assistants/{assistant_id}/sessions",
+                f"{base_path}/sessions",
                 params={"version": api_version},
                 auth=("apikey", assistant_api_key),
                 headers={"Content-Type": "application/json"},
@@ -467,26 +472,18 @@ async def test_iframe(
             session_id = session_resp.json()["session_id"]
             print(f"[test_iframe] セッション作成: {session_id}", flush=True)
 
-            # 2. メッセージ送信（context経由でURLをAssistantの変数にセット）
+            # 2. メッセージ送信（URLをテキストに直接含める）
             message_resp = await client.post(
-                f"{assistant_url}/v2/assistants/{assistant_id}/sessions/{session_id}/message",
+                f"{base_path}/sessions/{session_id}/message",
                 params={"version": api_version},
                 auth=("apikey", assistant_api_key),
                 headers={"Content-Type": "application/json"},
                 json={
+                    "user_id": "mcp_test_user",
                     "input": {
                         "message_type": "text",
-                        "text": "show_chart",
+                        "text": f"show_chart {url}",
                     },
-                    "context": {
-                        "skills": {
-                            "main skill": {
-                                "user_defined": {
-                                    "chat_url": url,
-                                }
-                            }
-                        }
-                    }
                 },
             )
             message_resp.raise_for_status()
@@ -496,7 +493,7 @@ async def test_iframe(
 
             # 3. セッション削除
             await client.delete(
-                f"{assistant_url}/v2/assistants/{assistant_id}/sessions/{session_id}",
+                f"{base_path}/sessions/{session_id}",
                 params={"version": api_version},
                 auth=("apikey", assistant_api_key),
             )
