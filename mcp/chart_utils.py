@@ -33,14 +33,31 @@ import plotly.graph_objects as go
 JAPANESE_FONT = "IPAGothic"
 
 
+def figure_to_html(fig) -> str:
+    """
+    PlotlyのfigureをHTMLテキストとして返す（WxO埋め込みチャット用）
+
+    【なぜHTMLテキストか】
+    - WxO環境にはファイルシステムがない
+    - HTMLテキストを返せば、埋め込みチャットのJSがiframeに表示できる
+
+    【include_plotlyjs="cdn"について】
+    HTMLにplotly.jsを埋め込まず、CDN（インターネット上のライブラリ）を参照する。
+    ファイルサイズが約3MBから数KBに削減される。
+    """
+    return fig.to_html(
+        include_plotlyjs="cdn",
+        full_html=True,
+        config={
+            "displayModeBar": True,
+            "displaylogo": False,
+        },
+    )
+
+
 def figure_to_file(fig, filename: str = "chart.html") -> str:
     """
-    PlotlyのfigureをHTMLファイルに保存
-
-    【なぜHTMLか】
-    - ブラウザで直接開ける → フロントエンド非依存
-    - ホバー、ズーム、パン等のインタラクティブ機能がそのまま使える
-    - PNGだとカーソルを合わせて値を見る機能が使えない
+    PlotlyのfigureをHTMLファイルに保存（Streamlit UI用）
 
     【include_plotlyjs="cdn"について】
     HTMLにplotly.jsを埋め込まず、CDN（インターネット上のライブラリ）を参照する。
@@ -361,13 +378,15 @@ def create_chart_for_location(
         margin=dict(l=60, r=160, t=60, b=100 if x_col == "key" else 50),
     )
 
-    # HTMLファイルに保存
+    # HTMLファイルに保存 + HTMLテキストも生成
     safe_location = re.sub(r'[^\w\-]', '_', location)
     chart_path = figure_to_file(fig, f"{safe_location}.html")
+    chart_html = figure_to_html(fig)
 
     return {
         "success": True,
         "chart_path": chart_path,
+        "chart_html": chart_html,
         "chart_title": chart_title,
         "location": location,
         "data_points": len(df),
@@ -778,9 +797,10 @@ def _create_single_prediction_chart(
         margin=dict(l=60, r=160, t=60, b=50),
     )
 
-    # HTMLファイルに保存
+    # HTMLファイルに保存 + HTMLテキストも生成
     safe_location = re.sub(r'[^\w\-]', '_', location)
     chart_path = figure_to_file(fig, f"{safe_location}_prediction.html")
+    chart_html = figure_to_html(fig)
 
     actual_count = len(actual_df)
     pred_count = len(pred_points) if pred_points else 0
@@ -789,6 +809,7 @@ def _create_single_prediction_chart(
     return {
         "success": True,
         "chart_path": chart_path,
+        "chart_html": chart_html,
         "chart_title": chart_title,
         "location": location,
         "actual_data_points": actual_count,
