@@ -251,11 +251,11 @@ def create_chart_for_location(
     # x_colが"key"の場合はcolorにkeyを使うとPlotlyが混乱するためスキップ
     use_color_key = color is None and x_col != "key"
 
-    # グレー系グラデーション（キーごとに異なるグレー色を割り当て）
-    # これにより strip plot のグループ分けが視覚的に横にばらける
-    gray_palette = [
-        "#808080", "#999999", "#6b6b6b", "#b0b0b0",
-        "#707070", "#a0a0a0", "#585858", "#c0c0c0",
+    # 暖色系グラデーション（キーごとに異なる暖色を割り当て）
+    # オレンジ〜赤系で測定値キーを区別しやすくする
+    warm_palette = [
+        "#E74C3C", "#E67E22", "#D35400", "#C0392B",
+        "#F39C12", "#E84393", "#D63031", "#F97F51",
     ]
 
     chart_common = dict(
@@ -269,7 +269,7 @@ def create_chart_for_location(
         chart_common["color"] = "key"
         keys = df["key"].unique().tolist()
         chart_common["color_discrete_map"] = {
-            k: gray_palette[i % len(gray_palette)] for i, k in enumerate(keys)
+            k: warm_palette[i % len(warm_palette)] for i, k in enumerate(keys)
         }
     # chart_type が未指定（None）の場合、データに応じて自動判定
     # 【なぜこの判定か】
