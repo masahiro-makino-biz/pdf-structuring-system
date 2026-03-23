@@ -420,7 +420,7 @@ async def forecast_time_series(
 # =============================================================================
 @mcp.tool()
 async def test_iframe(
-    url: str = "https://plotly.com/~PlotBot/0.embed",
+    url: str = "https://ja.wikipedia.org/wiki/%E3%83%A1%E3%82%A4%E3%83%B3%E3%83%9A%E3%83%BC%E3%82%B8",
 ) -> str:
     """
     Watson Assistant APIを呼び出し、iframe形式でURLを表示するテスト用ツール
@@ -472,7 +472,7 @@ async def test_iframe(
             session_id = session_resp.json()["session_id"]
             print(f"[test_iframe] セッション作成: {session_id}", flush=True)
 
-            # 2. メッセージ送信（URLをテキストに直接含める）
+            # 2. メッセージ送信（show_chart + URLを1回で送信）
             message_resp = await client.post(
                 f"{base_path}/sessions/{session_id}/message",
                 params={"version": api_version},

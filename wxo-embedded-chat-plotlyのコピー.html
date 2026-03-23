@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WxO Embedded Chat - Plotly Graph Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f4f4f4;
+      color: #161616;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ヘッダー */
+    header {
+      background-color: #0f62fe;
+      color: #ffffff;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    header .logo {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    header .subtext {
+      font-size: 13px;
+      opacity: 0.85;
+      margin-top: 2px;
+    }
+
+    /* フッター */
+    footer {
+      text-align: center;
+      padding: 16px;
+      font-size: 12px;
+      color: #8d8d8d;
+      background-color: #e0e0e0;
+    }
+
+    /* チャットウィジェットのルート要素 */
+    #root {
+      /* WxO の埋め込みチャットウィジェットがここにマウントされます */
+    }
+
+    /* ─── フローティング グラフパネル ─────────────────────────────
+       fullscreen-overlay のチャット上に重ねて表示する。
+       グラフ検出後に .visible クラスを付与して表示する。
+    ──────────────────────────────────────────────────────────── */
+    #graph-panel {
+      display: none;                /* 初期非表示 */
+      position: fixed;
+      top: 60px;
+      right: 16px;
+      width: 560px;
+      height: calc(100vh - 80px);
+      max-width: calc(100vw - 32px);
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+      z-index: 2147483647 !important; /* 最大値: WxO overlay より必ず前面 */
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #graph-panel.visible {
+      display: flex;
+    }
+
+    .graph-panel-header {
+      padding: 10px 16px;
+      background: #0f62fe;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      cursor: move;
+      user-select: none;
+    }
+
+    .graph-panel-header .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: rgba(255,255,255,0.4);
+      transition: background-color 0.3s;
+      flex-shrink: 0;
+    }
+
+    .graph-panel-header .status-dot.active {
+      background-color: #42be65;
+    }
+
+    .graph-panel-header h2 {
+      font-size: 13px;
+      font-weight: 600;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .graph-panel-header .close-btn {
+      background: none;
+      border: none;
+      color: #ffffff;
+      font-size: 18px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0 2px;
+      opacity: 0.8;
+    }
+
+    .graph-panel-header .close-btn:hover {
+      opacity: 1;
+    }
+
+    /* Plotly HTML を表示する iframe */
+    #graph-iframe {
+      flex: 1;
+      border: none;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ヘッダー -->
+  <header>
+    <div>
+      <div class="logo">IBM watsonx Orchestrate</div>
+      <div class="subtext">Embedded Agent Chat</div>
+    </div>
+  </header>
+
+  <!-- フッター -->
+  <footer>
+    &copy; 2026 IBM Corporation — watsonx Orchestrate Embedded Chat
+  </footer>
+
+  <!-- WxO チャットウィジェットのルート要素（必須） -->
+  <div id="root"></div>
+
+  <!-- フローティング グラフパネル（グラフ検出時に表示） -->
+  <div id="graph-panel">
+    <div class="graph-panel-header" id="graph-panel-header">
+      <div class="status-dot active" id="status-dot"></div>
+      <h2 id="graph-title">グラフ</h2>
+      <button class="close-btn" id="graph-close-btn" title="閉じる">&times;</button>
+    </div>
+    <iframe id="graph-iframe" sandbox="allow-scripts" title="Plotly Graph"></iframe>
+  </div>
+
+  <script>
+    // ─── グラフパネル 操作 ────────────────────────────────────────────
+    const graphPanel  = document.getElementById('graph-panel');
+    const iframe      = document.getElementById('graph-iframe');
+    const statusDot   = document.getElementById('status-dot');
+    const graphTitle  = document.getElementById('graph-title');
+
+    // 閉じるボタン
+    document.getElementById('graph-close-btn').addEventListener('click', function () {
+      graphPanel.classList.remove('visible');
+    });
+
+    // ドラッグで移動
+    (function () {
+      const header = document.getElementById('graph-panel-header');
+      let dragging = false, startX, startY, origLeft, origTop;
+      header.addEventListener('mousedown', function (e) {
+        dragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = graphPanel.getBoundingClientRect();
+        origLeft = rect.left;
+        origTop  = rect.top;
+      });
+      document.addEventListener('mousemove', function (e) {
+        if (!dragging) return;
+        graphPanel.style.left = (origLeft + e.clientX - startX) + 'px';
+        graphPanel.style.top  = (origTop  + e.clientY - startY) + 'px';
+        graphPanel.style.right = 'auto';
+      });
+      document.addEventListener('mouseup', function () { dragging = false; });
+    })();
+
+    /**
+     * 文字列から Plotly HTML ブロックを抽出する。
+     * - <!DOCTYPE html>... 形式
+     * - <html>...</html> 形式（DOCTYPE なし ← MCPサーバーの出力形式）
+     * - コードブロック内の HTML
+     * - エスケープされた \\n を含む文字列
+     */
+    function extractHtml(text) {
+      if (!text) return null;
+
+      // エスケープされた改行を実際の改行に変換（MCPが \\n で返す場合）
+      const unescaped = text.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
+
+      // コードブロック内を優先
+      const codeBlock = unescaped.match(/```(?:html)?\s*((?:<!DOCTYPE|<html)[\s\S]*?<\/html>)\s*```/i);
+      if (codeBlock) return codeBlock[1];
+
+      // <!DOCTYPE html>... 形式
+      const doctype = unescaped.match(/(<!DOCTYPE[\s\S]*?<\/html>)/i);
+      if (doctype) return doctype[1];
+
+      // <html>...</html> 形式（MCPサーバーの出力）
+      const htmlTag = unescaped.match(/(<html[\s\S]*?<\/html>)/i);
+      if (htmlTag) return htmlTag[1];
+
+      return null;
+    }
+
+    /**
+     * フローティングパネルに Plotly HTML を表示する。
+     */
+    function showGraph(html, title) {
+      console.log('[WxO] showGraph called, html length:', html.length);
+      iframe.srcdoc = html;
+      graphTitle.textContent = title || 'グラフ';
+      graphPanel.classList.add('visible');
+      console.log('[WxO] graph panel visible:', graphPanel.classList.contains('visible'),
+                  'z-index:', getComputedStyle(graphPanel).zIndex);
+    }
+
+    // ─── WxO チャット イベントハンドラ ──────────────────────────────
+
+    /**
+     * チャットロード時にイベントを登録する。
+     * chatOptions.onLoad コールバックとして渡す。
+     */
+    function onChatLoad(instance) {
+
+      // チャット準備完了
+      instance.on('chat:ready', function (event, instance) {
+        console.log('[WxO] chat:ready');
+      });
+
+      // エージェント応答を受信したとき（デバッグ + HTML抽出）
+      instance.on('receive', function (event, instance) {
+        // ── デバッグ: 実際に来ているデータを確認 ──
+        console.log('[WxO] receive event (full):', JSON.stringify(event?.message, null, 2));
+
+        const contents = event?.message?.content ?? [];
+        for (const item of contents) {
+          // text フィールドを確認
+          const candidates = [
+            item?.text,
+            // structuredContent.result にHTMLが入っている場合
+            item?.structuredContent?.result,
+            // その他ネストされたデータ
+            typeof item?.data === 'string' ? item.data : null,
+          ];
+
+          for (const candidate of candidates) {
+            if (!candidate) continue;
+            const html = extractHtml(candidate);
+            if (html) {
+              console.log('[WxO] Plotly HTML detected, rendering in iframe...');
+              const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+              showGraph(html, titleMatch ? titleMatch[1] : '気温グラフ');
+              return; // 見つかったら終了
+            }
+          }
+        }
+        console.log('[WxO] No Plotly HTML found in this message.');
+      });
+
+      // JWT トークン期限切れ時の自動更新（本番時に実装）
+      // instance.on('authTokenNeeded', async function (event, instance) {
+      //   const newToken = await fetch('/api/token').then(r => r.text());
+      //   event.authToken = newToken;
+      // });
+    }
+
+    // ─── WxO 埋め込みチャット設定 ────────────────────────────────────
+    window.wxOConfiguration = {
+      orchestrationID: "41e6be7f52ff448d93dcec59ce607fcb_98497123-b353-459c-844f-801907c545b1",
+      hostURL: "https://jp-tok.watson-orchestrate.cloud.ibm.com",
+      rootElementID: "root",
+      showLauncher: false,
+      deploymentPlatform: "ibmcloud",
+      crn: "crn:v1:bluemix:public:watsonx-orchestrate:jp-tok:a/41e6be7f52ff448d93dcec59ce607fcb:98497123-b353-459c-844f-801907c545b1::",
+      chatOptions: {
+        agentId: "b9d29b20-ef0f-4c6e-861e-93b5a618774c",
+        onLoad: onChatLoad,
+      },
+      layout: {
+        form: "fullscreen-overlay",
+        showOrchestrateHeader: true,
+      },
+      // 【テスト時】WxO UI → プロフィール → Settings → Embed Security → Off
+      // 【本番時】サーバーサイドで生成した JWT を設定
+      // identityToken: "JWTトークン",
+    };
+
+    // WxO チャットローダーの動的読み込み
+    setTimeout(function () {
+      const script = document.createElement("script");
+      script.src = `${window.wxOConfiguration.hostURL}/wxochat/wxoLoader.js?embed=true`;
+      script.addEventListener("load", function () {
+        wxoLoader.init();
+      });
+      document.head.appendChild(script);
+    }, 0);
+  </script>
+
+</body>
+</html>
