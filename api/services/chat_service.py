@@ -248,130 +248,77 @@ find(database="pdf_system", collection="pages_default",
 2. **線形回帰予測**: 測定値キーごとに forecast_linear を呼び出す
 3. **Prophet予測**: 測定値キーごとに forecast_time_series を呼び出す
 4. **カーブフィット予測**: 測定値キーごとに forecast_curve_fit を呼び出す
-5. **グラフ生成**: visualize_prediction に actual_data + 各予測データ をすべて渡す
+5. **グラフ生成**: visualize_prediction に actual_data + 各予測ツールの戻り値 をすべて渡す
 
-**Step 2〜4 は同じds/yパラメータで呼び出せるので、並行して実行可能。**
+**Step 2〜4 は同じds/y/key_nameパラメータで呼び出せるので、並行して実行可能。**
 
-### Step 2: 線形回帰予測（forecast_linear を呼び出す）
+### Step 2〜4: 予測ツールの呼び出し（3つとも同じパラメータ形式）
 
-findの結果から、各測定値キーの年度別データを抽出して forecast_linear に渡す。
+findの結果から、各測定値キーの年度別データを抽出して各ツールに渡す。
+**key_name には測定値キー名をそのまま渡すこと。**
 
 ```
 forecast_linear(
     ds='["2018-01-01", "2019-01-01", "2020-01-01"]',
     y='[0.10, 0.16, 0.22]',
+    key_name="摩耗量・タイヤ①・上",
     periods=5,
-    upper_limit=0.5  ← 基準値があれば渡す
+    upper_limit=0.5
 )
 ```
 
-- ds: 各年度の1月1日を日付形式で渡す（例: "2020-01-01"）
+- ds: 各年度の1月1日を日付形式で渡す
 - y: 対応する測定値を数値リストで渡す
-- periods: 予測する期間数を指定する
-- upper_limit: 基準値があれば渡す（超過年の判定に使用）
+- key_name: 測定値キー名（findの結果のキー名と完全一致させること）
+- periods: 予測する期間数（デフォルト5）
+- upper_limit: 基準値があれば渡す
 - **測定値キーが複数ある場合、各キーごとに個別に呼び出す**
 
-forecast_linear の結果を predicted_data の形式に変換する:
-```
-結果のforecast配列から:
-[{"year": 2025, "values": {"キー名": yhat値}}, ...]
+forecast_time_series, forecast_curve_fit も同じパラメータ。
+
+### 予測ツールの戻り値（重要）
+
+各ツールは `predicted_data` と `prediction_info` を直接返す。
+**LLM側で値を加工・変換してはいけない。ツールの戻り値をそのまま visualize_prediction に渡すこと。**
+
+```json
+{
+  "success": true,
+  "predicted_data": [{"year": 2026, "values": {"摩耗量・タイヤ①・上": 0.32}}, ...],
+  "prediction_info": {"method": "...", "threshold_crossing": {...}}
+}
 ```
 
-### Step 3: Prophet予測（forecast_time_series を呼び出す）
-
-forecast_linear と同じ ds/y パラメータを使って forecast_time_series を呼び出す。
-
+複数キーの結果をマージする場合は、各ツールの predicted_data 配列を結合する:
 ```
-forecast_time_series(
-    ds='["2018-01-01", "2019-01-01", "2020-01-01"]',
-    y='[0.10, 0.16, 0.22]',
-    periods=5,
-    upper_limit=0.5  ← 基準値があれば渡す
-)
+キー①の結果: [{"year": 2026, "values": {"キー①": 0.32}}, ...]
+キー②の結果: [{"year": 2026, "values": {"キー②": 0.38}}, ...]
+→ マージ: [{"year": 2026, "values": {"キー①": 0.32, "キー②": 0.38}}, ...]
 ```
-
-forecast_time_series の結果を prophet_predicted_data の形式に変換する:
-```
-結果のforecast配列から将来分（実データより後の年度）を取り出し:
-[{"year": 2025, "values": {"キー名": yhat値}}, ...]
-```
-
-### Step 4: カーブフィット予測（forecast_curve_fit を呼び出す）
-
-forecast_linear と同じ ds/y パラメータを使って forecast_curve_fit を呼び出す。
-
-```
-forecast_curve_fit(
-    ds='["2018-01-01", "2019-01-01", "2020-01-01"]',
-    y='[0.10, 0.16, 0.22]',
-    periods=5,
-    upper_limit=0.5  ← 基準値があれば渡す
-)
-```
-
-- ds, y, periods, upper_limit: forecast_time_series と同じ値を渡す
-- repair_drop_ratio: 改修検出の閾値（デフォルト0.5=50%低下で改修と判定）。通常は省略でOK
-- **測定値キーが複数ある場合、各キーごとに個別に呼び出す**（forecast_time_seriesと同じ）
-
-forecast_curve_fit の結果を curvefit_predicted_data の形式に変換する:
-```
-結果のforecast配列から:
-[{"year": 2025, "values": {"キー名": yhat値}}, ...]
-```
+**マージ時も値は絶対に変更しないこと。**
 
 ### 予測期間
 
 - ユーザーが「5年後まで」等と指定した場合: その期間まで予測する
-- 指定がない場合: **最大5年先まで**。基準値超過が5年以内に予測される場合は超過年+1年まで
+- 指定がない場合: デフォルト5年先まで
 - グラフが見づらくなるので、予測期間は実データの期間を超えないようにする
-
-### predicted_data / prophet_predicted_data / curvefit_predicted_data の形式（すべて同じ形式）
-
-```json
-[
-  {"year": 2025, "values": {"摩耗量・タイヤ①・上": 0.32, "摩耗量・タイヤ①・下": 0.38}},
-  {"year": 2026, "values": {"摩耗量・タイヤ①・上": 0.39, "摩耗量・タイヤ①・下": 0.45}}
-]
-```
-
-- year: 予測年度（実データの最終年度の翌年から開始）
-- values: 測定値キー名と予測値のペア。**キー名はfindの結果の測定値キーと完全に一致させること**
-
-### prediction_info / prophet_prediction_info の形式
-
-```json
-{
-  "method": "線形近似",
-  "threshold_crossing": {"摩耗量・タイヤ①・下": 2027},
-  "note": "年間約0.06mmの増加傾向"
-}
-```
-
-- method: 予測手法の説明（AI: "線形近似"、Prophet: "Prophet統計モデル"）
-- threshold_crossing: 基準値を超過すると予測される年度（キー名: 年度）。超過しないキーは省略
-- note/trend: トレンドの簡単な説明
 
 ### visualize_prediction の呼び出し
 
 ```
 visualize_prediction(
     actual_data="[findの結果のJSON]",
-    predicted_data="[AI予測データのJSON]",
-    prediction_info="[AI予測メタ情報のJSON]",
-    prophet_predicted_data="[Prophet予測データのJSON]",
-    prophet_prediction_info="[ProphetメタのJSON]",
-    curvefit_predicted_data="[カーブフィット予測データのJSON]",
-    curvefit_prediction_info="[カーブフィットメタのJSON]"
+    predicted_data="[forecast_linearの戻り値のpredicted_dataをそのまま]",
+    prediction_info="[forecast_linearの戻り値のprediction_infoをそのまま]",
+    prophet_predicted_data="[forecast_time_seriesの戻り値のpredicted_dataをそのまま]",
+    prophet_prediction_info="[forecast_time_seriesの戻り値のprediction_infoをそのまま]",
+    curvefit_predicted_data="[forecast_curve_fitの戻り値のpredicted_dataをそのまま]",
+    curvefit_prediction_info="[forecast_curve_fitの戻り値のprediction_infoをそのまま]"
 )
 ```
 
 - actual_data: findの戻り値をそのまま渡す（加工禁止）
-- predicted_data: AIが生成した予測JSON
-- prediction_info: AI予測のメタ情報
-- prophet_predicted_data: forecast_time_seriesの結果を変換したJSON
-- prophet_prediction_info: Prophet予測のメタ情報
-- curvefit_predicted_data: forecast_curve_fitの結果を変換したJSON
-- curvefit_prediction_info: カーブフィット予測のメタ情報
+- **各予測データ・メタ情報: ツールの戻り値をそのままJSON文字列で渡す（値の加工・変換禁止）**
 
 ### visualize_data と visualize_prediction の使い分け
 

@@ -358,6 +358,7 @@ def _trim_to_last_cycle(dates: list, values: list, drop_ratio: float = 0.5) -> t
 async def forecast_linear(
     ds: str,
     y: str,
+    key_name: str,
     periods: int = 5,
     upper_limit: float = None,
     lower_limit: float = None,
@@ -369,21 +370,23 @@ async def forecast_linear(
     - 改修（値の急激な回復）を自動検出し、最後の改修以降のデータで直線を当てはめる
     - 毎回同じ結果が出る（再現性がある）
     - データが少なくても動作する
+    - visualize_prediction にそのまま渡せる形式で返す
 
     【使い方】
     1. MongoDB MCPのfindで年度別の測定値データを取得する
-    2. ds（日付リスト）とy（測定値リスト）を渡す
-    3. 予測結果をvisualize_predictionのpredicted_dataに渡してグラフ化する
+    2. ds（日付リスト）とy（測定値リスト）とkey_name（測定値キー名）を渡す
+    3. 戻り値のpredicted_dataとprediction_infoをそのままvisualize_predictionに渡す
 
     Args:
         ds: 日付のリスト（JSON文字列）。例: '["2018-01-01", "2019-01-01", "2020-01-01"]'
         y: 測定値のリスト（JSON文字列）。dsと同じ長さ。例: '[0.10, 0.16, 0.22]'
+        key_name: 測定値キー名。例: "摩耗量・タイヤ①・上"
         periods: 予測する将来の期間数（デフォルト: 5）
         upper_limit: 上限値（基準値）。超過する予測値にフラグを立てる
         lower_limit: 下限値。下回る予測値にフラグを立てる
 
     Returns:
-        予測結果のJSON。forecast配列（ds, yhat, status）とメタ情報（傾き、超過年度など）を含む
+        predicted_data（visualize_prediction用）とprediction_infoを含むJSON
     """
     import numpy as np
     from scipy.stats import linregress
@@ -483,20 +486,26 @@ async def forecast_linear(
     else:
         trend = "判定不能"
 
+    # visualize_prediction 用のフォーマットで返す
+    # LLMによる変換を排除し、ツールの計算結果をそのまま渡せるようにする
+    predicted_data = [
+        {"year": int(f["ds"][:4]), "values": {key_name: f["yhat"]}}
+        for f in forecast_results
+    ]
+    threshold_crossing = {}
+    if first_exceed_year is not None:
+        threshold_crossing[key_name] = int(first_exceed_year)
+
+    prediction_info = {
+        "method": "線形回帰（最小二乗法）",
+        "threshold_crossing": threshold_crossing,
+        "note": f"傾き: {slope:.6f}/年, R²: {r_squared:.4f}",
+    }
+
     result_json = {
         "success": True,
-        "forecast": forecast_results,
-        "meta": {
-            "method": "線形回帰（最小二乗法）",
-            "slope_per_year": round(slope, 6),
-            "r_squared": round(r_squared, 4),
-            "periods": periods,
-            "n_history": len(values),
-            "n_cycles": len(cycle_starts),
-            "repair_years": repair_years_list,
-            "trend": trend,
-            "first_exceed_year": first_exceed_year,
-        }
+        "predicted_data": predicted_data,
+        "prediction_info": prediction_info,
     }
 
     print(f"[forecast_linear] 完了: slope={slope:.6f}, trend={trend}, exceed={first_exceed_year}, repairs={repair_years_list}", flush=True)
@@ -510,6 +519,7 @@ async def forecast_linear(
 async def forecast_time_series(
     ds: str,
     y: str,
+    key_name: str,
     periods: int = 5,
     upper_limit: float = None,
     lower_limit: float = None,
@@ -520,22 +530,23 @@ async def forecast_time_series(
     【特徴】
     - 改修（値の急激な回復）を自動検出し、最後の改修以降のデータで予測する
     - 統計モデルベースで季節性やトレンド変化も考慮できる
+    - visualize_prediction にそのまま渡せる形式で返す
 
     【使い方】
     1. MongoDB MCPのfindで年度別の測定値データを取得する
-    2. ds（日付リスト）とy（測定値リスト）を渡す
-    3. 予測結果をvisualize_predictionのprophet_predicted_dataに渡してグラフ化する
+    2. ds（日付リスト）とy（測定値リスト）とkey_name（測定値キー名）を渡す
+    3. 戻り値のpredicted_dataとprediction_infoをそのままvisualize_predictionに渡す
 
     Args:
         ds: 日付のリスト（JSON文字列）。例: '["2018-01-01", "2019-01-01", "2020-01-01"]'
         y: 測定値のリスト（JSON文字列）。dsと同じ長さ。例: '[0.10, 0.16, 0.22]'
+        key_name: 測定値キー名。例: "摩耗量・タイヤ①・上"
         periods: 予測する将来の期間数（デフォルト: 5）
         upper_limit: 上限値（基準値）。超過する予測値にフラグを立てる
         lower_limit: 下限値。下回る予測値にフラグを立てる
 
     Returns:
-        予測結果のJSON。forecast配列（ds, yhat, yhat_lower, yhat_upper, status）と
-        メタ情報（トレンド方向、超過年度など）を含む
+        predicted_data（visualize_prediction用）とprediction_infoを含むJSON
     """
     import pandas as pd
     from prophet import Prophet
@@ -629,19 +640,31 @@ async def forecast_time_series(
     else:
         trend = "判定不能"
 
+    # visualize_prediction 用のフォーマットで返す
+    # 将来分（実データより後の年度）だけ抽出
+    last_hist_year = int(df["ds"].max().strftime("%Y"))
+    future_records = [
+        r for r in out.to_dict(orient="records")
+        if int(r["ds"][:4]) > last_hist_year
+    ]
+    predicted_data = [
+        {"year": int(r["ds"][:4]), "values": {key_name: r["yhat"]}}
+        for r in future_records
+    ]
+    threshold_crossing = {}
+    if first_exceed_year is not None:
+        threshold_crossing[key_name] = int(first_exceed_year)
+
+    prediction_info = {
+        "method": "Prophet統計モデル",
+        "threshold_crossing": threshold_crossing,
+        "trend": trend,
+    }
+
     result = {
         "success": True,
-        "forecast": out.to_dict(orient="records"),
-        "meta": {
-            "periods": periods,
-            "n_history": len(df),
-            "n_original": len(values),
-            "repair_years": repair_years,
-            "hist_start": df["ds"].min().strftime("%Y-%m-%d"),
-            "hist_end": df["ds"].max().strftime("%Y-%m-%d"),
-            "trend": trend,
-            "first_exceed_year": first_exceed_year,
-        }
+        "predicted_data": predicted_data,
+        "prediction_info": prediction_info,
     }
 
     print(f"[forecast_time_series] 完了: trend={trend}, exceed={first_exceed_year}, repairs={repair_years}", flush=True)
@@ -655,6 +678,7 @@ async def forecast_time_series(
 async def forecast_curve_fit(
     ds: str,
     y: str,
+    key_name: str,
     periods: int = 5,
     upper_limit: float = None,
     lower_limit: float = None,
@@ -667,22 +691,24 @@ async def forecast_curve_fit(
     - 改修（値の急激な回復）を自動検出し、改修年のデータを除外する
     - 各改修サイクルを「改修後n年目」に正規化して全データを活用する
     - 線形・指数・対数の3種類のカーブから最もデータに合うものを自動選択する
+    - visualize_prediction にそのまま渡せる形式で返す
 
     【使い方】
     1. MongoDB MCPのfindで年度別の測定値データを取得する
-    2. ds（日付リスト）とy（測定値リスト）を渡す
-    3. 予測結果をvisualize_predictionのcurvefit_predicted_dataに渡してグラフ化する
+    2. ds（日付リスト）とy（測定値リスト）とkey_name（測定値キー名）を渡す
+    3. 戻り値のpredicted_dataとprediction_infoをそのままvisualize_predictionに渡す
 
     Args:
         ds: 日付のリスト（JSON文字列）。例: '["2018-01-01", "2019-01-01", "2020-01-01"]'
         y: 測定値のリスト（JSON文字列）。dsと同じ長さ。例: '[0.10, 0.16, 0.22]'
+        key_name: 測定値キー名。例: "摩耗量・タイヤ①・上"
         periods: 予測する将来の期間数（デフォルト: 5）
         upper_limit: 上限値（基準値）。超過する予測値にフラグを立てる
         lower_limit: 下限値。下回る予測値にフラグを立てる
         repair_drop_ratio: 改修検出の閾値。前年比でこの割合以上下がったら改修と判定（デフォルト: 0.5 = 50%）
 
     Returns:
-        予測結果のJSON。forecast配列とメタ情報（使用カーブ種類、検出した改修年、超過年度など）を含む
+        predicted_data（visualize_prediction用）とprediction_infoを含むJSON
     """
     import numpy as np
     from scipy.optimize import curve_fit
@@ -831,19 +857,28 @@ async def forecast_curve_fit(
     else:
         trend = "判定不能"
 
+    # visualize_prediction 用のフォーマットで返す
+    predicted_data = [
+        {"year": int(f["ds"][:4]), "values": {key_name: f["yhat"]}}
+        for f in forecast_results
+    ]
+    threshold_crossing = {}
+    if first_exceed_year is not None:
+        threshold_crossing[key_name] = int(first_exceed_year)
+
+    method_name = f"カーブフィット（{curve_name_jp.get(best_name, best_name)}）"
+    prediction_info = {
+        "method": method_name,
+        "threshold_crossing": threshold_crossing,
+        "repair_years": repair_years,
+        "curve_type": best_name,
+        "trend": trend,
+    }
+
     result = {
         "success": True,
-        "forecast": forecast_results,
-        "meta": {
-            "method": f"カーブフィット（{curve_name_jp.get(best_name, best_name)}）",
-            "curve_type": best_name,
-            "periods": periods,
-            "n_history": len(values),
-            "n_cycles": len(cycle_starts),
-            "repair_years": repair_years,
-            "trend": trend,
-            "first_exceed_year": first_exceed_year,
-        }
+        "predicted_data": predicted_data,
+        "prediction_info": prediction_info,
     }
 
     print(f"[forecast_curve_fit] 完了: curve={best_name}, trend={trend}, exceed={first_exceed_year}", flush=True)
