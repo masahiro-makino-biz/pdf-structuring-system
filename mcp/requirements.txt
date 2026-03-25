@@ -76,3 +76,17 @@ prophet>=1.1.5
 #   - async/await対応（FastMCPのasyncツール内で使える）
 #   - requestsはasync非対応
 httpx>=0.25.0
+
+# 【scipy】科学計算ライブラリ
+# 【用途】
+#   - curve_fit（カーブフィッティング）で測定値の劣化カーブを推定する
+#   - forecast_curve_fit MCPツールで使用
+# 【なぜscipyか】
+#   - 線形だけでなく指数・対数カーブにもフィットできる
+#   - 少ないデータ点でも動作する（Prophetは大量データ向き）
+#   - 改修サイクルごとに正規化したデータに対してカーブを当てはめる用途に最適
+# 【他の選択肢】
+#   - numpy.polyfit: 多項式のみ。指数・対数カーブには対応できない
+#   - scikit-learn: 汎用的だが、カーブフィッティング特化ではない
+scipy>=1.11.0
+>>>>>>> feature/curve-fit-prediction
