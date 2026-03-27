@@ -37,13 +37,8 @@ def figure_to_html(fig) -> str:
     """
     PlotlyのfigureをHTMLテキストとして返す（WxO埋め込みチャット用）
 
-    【なぜHTMLテキストか】
-    - WxO環境にはファイルシステムがない
-    - HTMLテキストを返せば、埋め込みチャットのJSがiframeに表示できる
-
     【include_plotlyjs="cdn"について】
-    HTMLにplotly.jsを埋め込まず、CDN（インターネット上のライブラリ）を参照する。
-    ファイルサイズが約3MBから数KBに削減される。
+    HTMLにplotly.jsを埋め込まず、CDNを参照する。ファイルサイズが約3MBから数KBに削減。
     """
     return fig.to_html(
         include_plotlyjs="cdn",
@@ -57,7 +52,12 @@ def figure_to_html(fig) -> str:
 
 def figure_to_file(fig, filename: str = "chart.html") -> str:
     """
-    PlotlyのfigureをHTMLファイルに保存（Streamlit UI用）
+    PlotlyのfigureをHTMLファイルに保存
+
+    【なぜHTMLか】
+    - ブラウザで直接開ける → フロントエンド非依存
+    - ホバー、ズーム、パン等のインタラクティブ機能がそのまま使える
+    - PNGだとカーソルを合わせて値を見る機能が使えない
 
     【include_plotlyjs="cdn"について】
     HTMLにplotly.jsを埋め込まず、CDN（インターネット上のライブラリ）を参照する。
