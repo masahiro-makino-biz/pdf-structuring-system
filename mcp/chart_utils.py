@@ -825,21 +825,21 @@ def _create_single_prediction_chart(
     # どちらの予測かラベルを付けて区別する。
     crossing_texts = []
     if threshold_crossing:
-        unique_years = sorted(set(threshold_crossing.values()))
-        crossing_texts.extend(f"AI超過予測: {y}年" for y in unique_years)
+        for key, year in sorted(threshold_crossing.items(), key=lambda x: x[1]):
+            crossing_texts.append(f"線形: {key} → {year}年超過")
     if prophet_threshold_crossing:
-        unique_years = sorted(set(prophet_threshold_crossing.values()))
-        crossing_texts.extend(f"Prophet超過予測: {y}年" for y in unique_years)
+        for key, year in sorted(prophet_threshold_crossing.items(), key=lambda x: x[1]):
+            crossing_texts.append(f"Prophet: {key} → {year}年超過")
     if curvefit_threshold_crossing:
-        unique_years = sorted(set(curvefit_threshold_crossing.values()))
-        crossing_texts.extend(f"カーブフィット超過予測: {y}年" for y in unique_years)
+        for key, year in sorted(curvefit_threshold_crossing.items(), key=lambda x: x[1]):
+            crossing_texts.append(f"カーブフィット: {key} → {year}年超過")
     if crossing_texts:
         fig.add_annotation(
             xref="paper", yref="paper",
             x=0.98, y=0.98,
-            text="  ".join(crossing_texts),
+            text="<br>".join(crossing_texts),
             showarrow=False,
-            font=dict(size=12, color="red", family=JAPANESE_FONT),
+            font=dict(size=11, color="red", family=JAPANESE_FONT),
             xanchor="right", yanchor="top",
             bgcolor="rgba(255,255,255,0.8)",
             bordercolor="red",
