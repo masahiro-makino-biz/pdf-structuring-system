@@ -357,6 +357,7 @@ def create_chart_for_location(
         xaxis_config["tickangle"] = -45
 
     fig.update_layout(
+        template=None,  # デフォルトテンプレート無効化（HTMLサイズ削減）
         title=dict(text=chart_title, font=dict(size=16, family=JAPANESE_FONT)),
         xaxis_title=dict(text=x_label, font=dict(size=13, family=JAPANESE_FONT)),
         yaxis_title=dict(text="測定値", font=dict(size=13, family=JAPANESE_FONT)),
@@ -852,6 +853,7 @@ def _create_single_prediction_chart(
     chart_title = " / ".join(title_parts) + " 【予測】"
 
     fig.update_layout(
+        template=None,  # デフォルトテンプレート無効化（HTMLサイズ削減）
         title=dict(text=chart_title, font=dict(size=16, family=JAPANESE_FONT)),
         xaxis_title=dict(text="年度", font=dict(size=13, family=JAPANESE_FONT)),
         yaxis_title=dict(text="測定値", font=dict(size=13, family=JAPANESE_FONT)),

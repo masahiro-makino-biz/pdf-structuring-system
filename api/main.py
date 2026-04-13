@@ -54,7 +54,6 @@ from core.logging import setup_logging, get_logger
 # サービス層
 # =============================================================================
 from services.pdf_processor import process_pdf
-from services.dummy_generator import generate_dummy_data
 from services.chat_service import process_chat, clear_history
 
 # ロギング初期化（アプリ起動時に1回だけ）
@@ -586,110 +585,160 @@ async def delete_file(
 
 
 # =============================================================================
-# ダミーデータ生成エンドポイント
+# 正規化辞書管理エンドポイント
+# =============================================================================
+#
+# 【このセクションの役割】
+# normalization_dict コレクションを管理画面から編集できるようにする。
+# 辞書は PDF 処理時の表記ゆれ統一に使われる（canonical + variants）。
+#
+# 【正規化対象フィールド】
+# 機器 / 機器部品 / 計測箇所 / 点検項目 の4つ。
+# 他のフィールドは登録できないようにバリデーションする。
 # =============================================================================
 
-
-class DummyGenerateRequest(BaseModel):
-    """ダミーデータ生成リクエスト"""
-    source_file_id: str
-    tenant: str = "default"
-    start_year: int
-    end_year: int
-    repair_years: list[int] = []
+from bson import ObjectId
+from services.pipeline.normalize_rules import TEXT_FIELDS as NORMALIZATION_FIELDS
 
 
-class DummyGenerateResponse(BaseModel):
-    """ダミーデータ生成レスポンス"""
-    success: bool
-    dummy_group_id: str | None = None
-    source_file_id: str | None = None
-    source_filename: str | None = None
-    total_records: int | None = None
-    year_range: str | None = None
-    repair_years: list[int] | None = None
-    error: str | None = None
+def _serialize_dict_entry(doc: dict) -> dict:
+    """MongoDB ドキュメントをJSONシリアライズ可能な形式に変換"""
+    return {
+        "id": str(doc["_id"]),
+        "field": doc["field"],
+        "canonical": doc["canonical"],
+        "variants": doc.get("variants", []),
+        "created_at": doc.get("created_at").isoformat() if doc.get("created_at") else None,
+        "updated_at": doc.get("updated_at").isoformat() if doc.get("updated_at") else None,
+    }
 
 
-@app.post("/admin/dummy/generate", response_model=DummyGenerateResponse)
-async def generate_dummy_data_endpoint(request: DummyGenerateRequest):
-    """
-    既存データをテンプレートにダミーデータを生成
-
-    【処理フロー】
-    1. テンプレートとなるファイルの構造化データを取得
-    2. 年度範囲・修繕年に基づいて経年劣化データを計算
-    3. pages コレクションに保存
-
-    Args:
-        request: 生成パラメータ（テンプレートID、年度範囲、修繕年）
-
-    Returns:
-        生成結果（グループID、レコード数等）
-    """
-    # バリデーション
-    if request.start_year >= request.end_year:
-        raise HTTPException(status_code=400, detail="終了年は開始年より後にしてください")
-    if request.end_year - request.start_year > 50:
-        raise HTTPException(status_code=400, detail="年度範囲は50年以内にしてください")
-
-    result = await generate_dummy_data(
-        db=db,
-        source_file_id=request.source_file_id,
-        tenant=request.tenant,
-        start_year=request.start_year,
-        end_year=request.end_year,
-        repair_years=request.repair_years,
-    )
-
-    if result["success"]:
-        return DummyGenerateResponse(
-            success=True,
-            dummy_group_id=result["dummy_group_id"],
-            source_file_id=result["source_file_id"],
-            source_filename=result["source_filename"],
-            total_records=result["total_records"],
-            year_range=f"{request.start_year}-{request.end_year}",
-            repair_years=request.repair_years,
-        )
-    else:
-        return DummyGenerateResponse(
-            success=False,
-            error=result.get("error"),
-        )
+class NormalizationDictCreate(BaseModel):
+    """新規canonical登録リクエスト"""
+    field: str
+    canonical: str
+    variants: list[str] = []
 
 
-@app.delete("/admin/dummy/{dummy_group_id}")
-async def delete_dummy_group(
-    dummy_group_id: str,
-    tenant: str = Query(default="default", description="テナントID"),
+class NormalizationDictUpdate(BaseModel):
+    """canonical/variants 更新リクエスト"""
+    canonical: str | None = None
+    variants: list[str] | None = None
+
+
+@app.get("/admin/normalization-dict")
+async def list_normalization_dict(
+    field: str | None = Query(default=None, description="絞り込みフィールド名"),
 ):
-    """
-    ダミーデータグループを一括削除
+    """正規化辞書の一覧を取得"""
+    query = {}
+    if field:
+        if field not in NORMALIZATION_FIELDS:
+            raise HTTPException(status_code=400, detail=f"無効なフィールド: {field}")
+        query["field"] = field
 
-    【なぜ file_id ではなく dummy_group_id で削除するか】
-    ダミーデータは file_id = dummy_group_id で保存しているので
-    実質同じだが、意味を明確にするため専用エンドポイントにしている。
-
-    Args:
-        dummy_group_id: 削除するダミーデータのグループID
-        tenant: テナントID
-
-    Returns:
-        削除結果
-    """
-    result = await db.pages.delete_many({
-        "dummy_group_id": dummy_group_id,
-        "tenant": tenant,
-    })
-
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="ダミーデータが見つかりません")
-
+    cursor = db.normalization_dict.find(query).sort([("field", 1), ("canonical", 1)])
+    docs = await cursor.to_list(length=None)
     return {
         "success": True,
-        "deleted_count": result.deleted_count,
+        "entries": [_serialize_dict_entry(d) for d in docs],
     }
+
+
+@app.post("/admin/normalization-dict")
+async def create_normalization_entry(request: NormalizationDictCreate):
+    """新規canonicalを辞書に登録"""
+    if request.field not in NORMALIZATION_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"フィールドは {NORMALIZATION_FIELDS} のいずれか"
+        )
+    if not request.canonical.strip():
+        raise HTTPException(status_code=400, detail="canonicalは必須")
+
+    # 重複チェック（同一fieldで同じcanonicalは作れない）
+    existing = await db.normalization_dict.find_one({
+        "field": request.field,
+        "canonical": request.canonical,
+    })
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"既に登録されています: [{request.field}] {request.canonical}"
+        )
+
+    now = datetime.utcnow()
+    doc = {
+        "field": request.field,
+        "canonical": request.canonical,
+        "variants": request.variants,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = await db.normalization_dict.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return {"success": True, "entry": _serialize_dict_entry(doc)}
+
+
+@app.put("/admin/normalization-dict/{entry_id}")
+async def update_normalization_entry(entry_id: str, request: NormalizationDictUpdate):
+    """
+    canonical をリネーム、または variants を差し替え。
+
+    【canonicalリネーム時の注意】
+    このエンドポイント自体は辞書を書き換えるだけで、
+    既存の pages コレクションの正規化済みデータは更新されない。
+    再正規化は別途バッチ（batch.py --force）で実施する。
+    """
+    try:
+        obj_id = ObjectId(entry_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="不正なID形式")
+
+    existing = await db.normalization_dict.find_one({"_id": obj_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="エントリが見つかりません")
+
+    update_fields: dict = {"updated_at": datetime.utcnow()}
+
+    if request.canonical is not None:
+        new_canonical = request.canonical.strip()
+        if not new_canonical:
+            raise HTTPException(status_code=400, detail="canonicalは空にできません")
+        # リネーム先が同一fieldで重複していないか確認
+        if new_canonical != existing["canonical"]:
+            duplicate = await db.normalization_dict.find_one({
+                "field": existing["field"],
+                "canonical": new_canonical,
+                "_id": {"$ne": obj_id},
+            })
+            if duplicate:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"リネーム先が既に存在: {new_canonical}"
+                )
+        update_fields["canonical"] = new_canonical
+
+    if request.variants is not None:
+        update_fields["variants"] = request.variants
+
+    await db.normalization_dict.update_one({"_id": obj_id}, {"$set": update_fields})
+    updated = await db.normalization_dict.find_one({"_id": obj_id})
+    return {"success": True, "entry": _serialize_dict_entry(updated)}
+
+
+@app.delete("/admin/normalization-dict/{entry_id}")
+async def delete_normalization_entry(entry_id: str):
+    """辞書エントリを削除"""
+    try:
+        obj_id = ObjectId(entry_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="不正なID形式")
+
+    result = await db.normalization_dict.delete_one({"_id": obj_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="エントリが見つかりません")
+    return {"success": True}
 
 
 # =============================================================================
