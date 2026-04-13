@@ -345,7 +345,8 @@ async def list_files(
             path=f["path"],
             size=f["size"],
             tenant=f["tenant"],
-            uploaded_at=f["uploaded_at"].isoformat(),
+            # uploaded_at が None のドキュメントがDBに混在する可能性があるため安全に変換
+            uploaded_at=f["uploaded_at"].isoformat() if f.get("uploaded_at") else "",
             processed=f.get("processed", False),
             processed_at=f["processed_at"].isoformat() if f.get("processed_at") else None,
         )
