@@ -321,8 +321,17 @@ async def list_files(
     """
     # pages コレクションから file_id ごとにグループ化してファイル一覧を取得
     # aggregate を使って重複を除去
+    # 【なぜ $match に file_id 条件を入れるか】
+    # 過去の不完全な処理で file_id/filename/path が null のドキュメントがDBに
+    # 残ることがある。これらは FileInfo の必須フィールドを満たせず Pydantic で
+    # バリデーションエラーになるため、aggregate段階で除外しておく。
     pipeline = [
-        {"$match": {"tenant": tenant}},
+        {"$match": {
+            "tenant": tenant,
+            "file_id": {"$ne": None},
+            "filename": {"$ne": None},
+            "path": {"$ne": None},
+        }},
         {"$group": {
             "_id": "$file_id",
             "file_id": {"$first": "$file_id"},
@@ -338,19 +347,20 @@ async def list_files(
     ]
     files = await db.pages.aggregate(pipeline).to_list(100)
 
+    # 集約後にも file_id 欠損が残る可能性は低いが念のため防御的にスキップ
     return [
         FileInfo(
             file_id=f["file_id"],
             filename=f["filename"],
             path=f["path"],
-            size=f["size"],
-            tenant=f["tenant"],
-            # uploaded_at が None のドキュメントがDBに混在する可能性があるため安全に変換
+            size=f.get("size", 0) or 0,
+            tenant=f.get("tenant", tenant),
             uploaded_at=f["uploaded_at"].isoformat() if f.get("uploaded_at") else "",
-            processed=f.get("processed", False),
+            processed=bool(f.get("processed")),
             processed_at=f["processed_at"].isoformat() if f.get("processed_at") else None,
         )
         for f in files
+        if f.get("file_id") and f.get("filename") and f.get("path")
     ]
 
 
