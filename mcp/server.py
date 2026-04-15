@@ -61,7 +61,7 @@ async def visualize_data(
         min_value: この値以上のデータだけ表示（例: 0.5）
         max_value: この値以下のデータだけ表示（例: 1.0）
         show_reference: 基準値の赤い線を表示するか（デフォルト: True）
-        x_axis: X軸に使うカラム。"year"(年度) or "key"(点検項目)。未指定なら自動判定（複数年→年度、単年→点検項目）
+        x_axis: X軸に使うカラム。"year"(年度) or "key"(測定値キー)。未指定なら自動判定（複数年→年度、単年→測定値キー）
         key_filter: 測定値キー名で絞る（部分一致、カンマ区切りで複数可）。例: "タイヤ・上・①" や "振動値・A,振動値・B"
         above_reference: Trueにすると基準値を超えているデータだけ表示（デフォルト: False）
 
@@ -120,7 +120,7 @@ async def visualize_data(
             "charts": []
         }, ensure_ascii=False)
 
-    # 計測箇所ごとにグラフ生成（オプションパラメータをそのまま透過）
+    # 機器+機器部品+測定物理量 の組み合わせごとにグラフ生成（オプションパラメータをそのまま透過）
     try:
         result = chart_utils.create_charts_by_location(
             results,

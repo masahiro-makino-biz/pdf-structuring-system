@@ -3,12 +3,12 @@
 # =============================================================================
 #
 # 【グラフ仕様】
-# - グループ化単位: 計測箇所（インペラ外周部など）
-# - 同じ計測箇所のデータは同じグラフに複数年分をプロット
-# - 異なる計測箇所は別のグラフ
+# - グループ化単位: 機器 + 機器部品 + 測定物理量 の組み合わせ
+# - 同じ組み合わせのデータは同じグラフに複数年分をプロット
+# - 異なる組み合わせ（測定物理量が違えば単位も違う）は別のグラフ
 # - X軸: 年度
 # - Y軸: 測定値
-# - 凡例: 測定値キー
+# - 凡例: 測定値キー（行列ラベル）
 # - 基準値: 赤い水平線
 # - ホバー: カーソルを合わせるとx,y値と凡例が表示される
 #
@@ -113,16 +113,21 @@ def extract_reference_values(references: dict) -> dict[str, float]:
 
 def group_by_measurement_location(results: list) -> dict:
     """
-    計測箇所ごとにグループ化
-    同じ計測箇所のデータは1つのグラフにまとめる（複数年対応）
+    機器+機器部品+測定物理量 の組み合わせごとにグループ化
+    同じ組み合わせのデータは1つのグラフにまとめる（複数年対応）
+
+    【グループ化キー】
+    "{機器} / {機器部品} / {測定物理量}" 形式の文字列
+    例: "2号機微粉炭機D / インペラ・外周部 / 摩耗量"
 
     Returns:
         {
-            "インペラ外周部": {
+            "2号機微粉炭機D / インペラ・外周部 / 摩耗量": {
                 "data_points": [...],
-                "equipment": "機器名",
-                "equipment_part": "機器部品名",
-                "reference_values": {"摩耗量": 0.5, "振動値": 1.0}
+                "equipment": "2号機微粉炭機D",
+                "equipment_part": "インペラ・外周部",
+                "measurement_type": "摩耗量",
+                "reference_values": {"摩耗量": 0.5}
             },
             ...
         }
@@ -138,27 +143,30 @@ def group_by_measurement_location(results: list) -> dict:
             if year is None:
                 continue
 
-            location = data.get("計測箇所") or "不明"
+            equipment = data.get("機器") or "不明機器"
+            equipment_part = data.get("機器部品") or "不明部品"
+            measurement_type = data.get("測定物理量") or "不明物理量"
             measurements = data.get("測定値", {})
             references = data.get("基準値", {})
-            equipment = data.get("機器", "")
-            equipment_part = data.get("機器部品", "")
 
             ref_values = extract_reference_values(references)
 
-            # 計測箇所でグループ化
-            if location not in location_groups:
-                location_groups[location] = {
+            # 機器+機器部品+測定物理量 でグループ化
+            group_key = f"{equipment} / {equipment_part} / {measurement_type}"
+
+            if group_key not in location_groups:
+                location_groups[group_key] = {
                     "data_points": [],
                     "equipment": equipment,
                     "equipment_part": equipment_part,
+                    "measurement_type": measurement_type,
                     "reference_values": {}
                 }
 
             # 基準値をマージ（同じキーは上書きしない）
             for k, v in ref_values.items():
-                if k not in location_groups[location]["reference_values"]:
-                    location_groups[location]["reference_values"][k] = v
+                if k not in location_groups[group_key]["reference_values"]:
+                    location_groups[group_key]["reference_values"][k] = v
 
             # 各測定値を追加（年度情報付き）
             for key, value in measurements.items():
@@ -170,7 +178,7 @@ def group_by_measurement_location(results: list) -> dict:
                 if not isinstance(value, (int, float)):
                     continue
 
-                location_groups[location]["data_points"].append({
+                location_groups[group_key]["data_points"].append({
                     "year": year,
                     "key": key,
                     "value": value
@@ -184,6 +192,7 @@ def create_chart_for_location(
     data_points: list,
     equipment: str = "",
     equipment_part: str = "",
+    measurement_type: str = "",
     reference_values: dict = None,
     chart_type: str = None,
     color: str = None,
@@ -197,7 +206,10 @@ def create_chart_for_location(
     above_reference: bool = False,
 ) -> dict:
     """
-    1つの計測箇所用のグラフを生成（複数年対応）
+    1グループ用のグラフを生成（複数年対応）
+
+    【グループ】
+    機器 + 機器部品 + 測定物理量 の組み合わせ1つ分のデータ
 
     【動的パラメータ】
     chart_type, color, year_from/to, min/max_value, show_reference で
@@ -250,15 +262,15 @@ def create_chart_for_location(
     unique_years = df["year"].nunique()
     if x_axis is not None:
         x_col = x_axis
-        x_label = "年度" if x_axis == "year" else "点検項目"
+        x_label = "年度" if x_axis == "year" else "測定値キー"
     elif unique_years <= 1:
         x_col = "key"
-        x_label = "点検項目"
+        x_label = "測定値キー"
     else:
         x_col = "year"
         x_label = "年度"
 
-    # 凡例は点検項目（key）で色分け
+    # 凡例は測定値キー（key）で色分け
     # デフォルトはグレー統一、基準値超過のみ赤枠で目立たせる
     if reference_values is None:
         reference_values = {}
@@ -280,7 +292,7 @@ def create_chart_for_location(
         x=x_col,
         y="value",
         hover_data={"key": True, "year": True, "value": ":.4f"},
-        labels={"year": "年度", "value": "測定値", "key": "点検項目"},
+        labels={"year": "年度", "value": "測定値", "key": "測定値キー"},
     )
     if use_color_key:
         chart_common["color"] = "key"
@@ -347,10 +359,11 @@ def create_chart_for_location(
             ))
 
     # タイトル・ラベル・レイアウト設定
-    title_parts = [p for p in [equipment, equipment_part, location] if p]
-    chart_title = " / ".join(title_parts)
+    # 機器 / 機器部品 / 測定物理量 を並べる
+    title_parts = [p for p in [equipment, equipment_part, measurement_type] if p]
+    chart_title = " / ".join(title_parts) if title_parts else location
 
-    # X軸が点検項目（key）の場合はラベルが長いので斜め表示
+    # X軸が測定値キー（key）の場合はラベルが長いので斜め表示
     # 年度（year）の場合は短いので斜めにしない
     xaxis_config = dict(showgrid=False)
     if x_col == "key":
@@ -455,9 +468,9 @@ def create_prediction_chart(
     実データ + AI予測 + Prophet予測 + カーブフィット予測 を1つのグラフに可視化する（メイン関数）
 
     【処理の流れ】
-    1. group_by_measurement_location() で実データを計測箇所ごとにグループ化
-    2. predictions / prophet_predictions / curvefit_predictions の測定値キー名で計測箇所に振り分ける
-    3. 計測箇所ごとに、実線（実データ）+ オレンジ破線（AI予測）+ 青点線（Prophet予測）
+    1. group_by_measurement_location() で実データを 機器+機器部品+測定物理量 の組み合わせごとにグループ化
+    2. predictions / prophet_predictions / curvefit_predictions の測定値キー名でグループに振り分ける
+    3. グループごとに、実線（実データ）+ オレンジ破線（AI予測）+ 青点線（Prophet予測）
        + 緑一点鎖線（カーブフィット予測）のグラフを生成
 
     Args:
@@ -489,7 +502,7 @@ def create_prediction_chart(
     if curvefit_prediction_info is None:
         curvefit_prediction_info = {}
 
-    # 1. 実データを計測箇所ごとにグループ化（既存関数を再利用）
+    # 1. 実データを 機器+機器部品+測定物理量 ごとにグループ化（既存関数を再利用）
     location_groups = group_by_measurement_location(results)
 
     if not location_groups:
@@ -499,7 +512,7 @@ def create_prediction_chart(
             "charts": []
         }
 
-    # 2. 予測データを計測箇所ごとに振り分ける
+    # 2. 予測データをグループ（機器+機器部品+測定物理量）ごとに振り分ける
     prediction_by_location = _assign_predictions_to_locations(
         location_groups, predictions
     )
@@ -510,7 +523,7 @@ def create_prediction_chart(
         location_groups, curvefit_predictions
     ) if curvefit_predictions else {loc: [] for loc in location_groups}
 
-    # 3. 計測箇所ごとにグラフを生成
+    # 3. グループごとにグラフを生成
     threshold_crossing = prediction_info.get("threshold_crossing", {})
     prophet_threshold_crossing = prophet_prediction_info.get("threshold_crossing", {})
     curvefit_threshold_crossing = curvefit_prediction_info.get("threshold_crossing", {})
@@ -566,24 +579,24 @@ def _assign_predictions_to_locations(
     predictions: list,
 ) -> dict:
     """
-    予測データを計測箇所ごとに振り分ける
+    予測データをグループ（機器+機器部品+測定物理量）ごとに振り分ける
 
     【マッチング方法】
-    各計測箇所の実データに含まれる測定値キー名を集め、
-    予測データの values に同じキー名があれば、その計測箇所に紐づける。
+    各グループの実データに含まれる測定値キー名を集め、
+    予測データの values に同じキー名があれば、そのグループに紐づける。
 
     Returns:
-        {"タイヤ外周部": [{"year": 2025, "key": "摩耗量・タイヤ①・上", "value": 0.32}, ...]}
+        {"2号機微粉炭機D / インペラ・外周部 / 摩耗量": [{"year": 2025, "key": "タイヤ1", "value": 0.32}, ...]}
     """
-    # 各計測箇所が持つ測定値キー名のセットを作る
+    # 各グループが持つ測定値キー名のセットを作る
     location_keys = {}
-    for location, group in location_groups.items():
+    for group_key, group in location_groups.items():
         keys = set()
         for dp in group["data_points"]:
             keys.add(dp["key"])
-        location_keys[location] = keys
+        location_keys[group_key] = keys
 
-    # 予測データをフラットなポイント列に変換して計測箇所に振り分け
+    # 予測データをフラットなポイント列に変換してグループに振り分け
     result = {loc: [] for loc in location_groups}
 
     for pred in predictions:
@@ -595,10 +608,10 @@ def _assign_predictions_to_locations(
         for key, value in values.items():
             if not isinstance(value, (int, float)):
                 continue
-            # このキーがどの計測箇所に属するか探す
-            for location, keys in location_keys.items():
+            # このキーがどのグループに属するか探す
+            for group_key, keys in location_keys.items():
                 if key in keys:
-                    result[location].append({
+                    result[group_key].append({
                         "year": year,
                         "key": key,
                         "value": value,
@@ -622,7 +635,7 @@ def _create_single_prediction_chart(
     curvefit_threshold_crossing: dict = None,
 ) -> dict:
     """
-    1つの計測箇所の予測グラフを生成
+    1グループ（機器+機器部品+測定物理量）の予測グラフを生成
 
     【なぜ go.Scatter を直接使うか】
     px.line() だと全データが同じスタイルで描画される。
@@ -904,9 +917,10 @@ def _create_single_prediction_chart(
 
 def create_charts_by_location(results: list, **options) -> dict:
     """
-    計測箇所ごとにグラフを生成（メイン関数）
-    - 同じ計測箇所 → 同じグラフ（複数年をX軸にプロット）
-    - 異なる計測箇所 → 別々のグラフ
+    機器+機器部品+測定物理量 の組み合わせごとにグラフを生成（メイン関数）
+    - 同じ組み合わせ → 同じグラフ（複数年をX軸にプロット）
+    - 異なる組み合わせ → 別々のグラフ
+    - 単位が違う物理量が混ざらないよう、測定物理量ごとに独立したグラフになる
     - **options: chart_type, color, year_from/to, min/max_value, show_reference
     """
     location_groups = group_by_measurement_location(results)
@@ -919,12 +933,13 @@ def create_charts_by_location(results: list, **options) -> dict:
         }
 
     charts = []
-    for location, group in location_groups.items():
+    for group_key, group in location_groups.items():
         result = create_chart_for_location(
-            location=location,
+            location=group_key,
             data_points=group["data_points"],
             equipment=group["equipment"],
             equipment_part=group["equipment_part"],
+            measurement_type=group.get("measurement_type", ""),
             reference_values=group["reference_values"],
             **options,
         )
