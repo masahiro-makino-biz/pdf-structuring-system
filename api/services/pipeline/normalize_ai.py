@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 # 正規化対象フィールド（normalize_rules.py の TEXT_FIELDS と同じ）
-TEXT_FIELDS = ["機器", "機器部品", "計測箇所", "点検項目"]
+TEXT_FIELDS = ["点検タイトル", "機器", "機器部品", "測定物理量"]
 
 # AI判定の確信度閾値
 # これ以上なら同一と判定し辞書に追加。これ未満なら新規として登録。
