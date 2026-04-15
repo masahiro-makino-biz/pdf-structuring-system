@@ -20,27 +20,6 @@ fastmcp>=2.0.0,<3
 # 互換性のあるバージョンに固定する。
 fakeredis>=2.21.0,<2.26.0
 
-# 【pdf2image】PDF→画像変換ライブラリ
-# 【内部でpopplerを使用】
-#   - poppler: PDFを処理するC++ライブラリ
-#   - Dockerfileでpoppler-utilsをインストールする必要がある
-# 【他の選択肢】
-#   - PyMuPDF(fitz): 高速だがライセンスがAGPL
-#   - pikepdf: PDFの編集向け、画像変換には不向き
-pdf2image>=1.16.0
-
-# 【Pillow】Python画像処理ライブラリ
-# 【用途】
-#   - 画像のリサイズ、回転
-#   - 画像のBase64エンコード（OpenAI APIに送信用）
-Pillow>=10.0.0
-
-# 【openai】OpenAI公式Pythonクライアント
-# 【用途】
-#   - GPT-4V（Vision）で画像を解析
-#   - 構造化データ（JSON）を抽出
-openai>=1.0.0
-
 # 【plotly】インタラクティブグラフ描画ライブラリ
 # 【用途】
 #   - stripplot風の散布図を生成し、HTMLファイルとして保存

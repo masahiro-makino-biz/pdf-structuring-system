@@ -699,7 +699,7 @@ async def update_normalization_entry(entry_id: str, request: NormalizationDictUp
     【canonicalリネーム時の注意】
     このエンドポイント自体は辞書を書き換えるだけで、
     既存の pages コレクションの正規化済みデータは更新されない。
-    再正規化は別途バッチ（batch.py --force）で実施する。
+    既存データに反映したい場合は個別にレコードを削除・再処理する。
     """
     try:
         obj_id = ObjectId(entry_id)
