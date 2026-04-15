@@ -220,27 +220,17 @@ def admin_page():
 
                                 # 削除ボタン
                                 st.divider()
-                                is_dummy = f["filename"].startswith("【ダミー】")
-                                delete_label = "このダミーデータを削除" if is_dummy else "このファイルを削除"
                                 if st.button(
-                                    delete_label,
+                                    "このファイルを削除",
                                     key=f"delete_{f['file_id']}",
                                     type="secondary"
                                 ):
                                     try:
-                                        if is_dummy:
-                                            # ダミーデータは dummy_group_id（= file_id）で一括削除
-                                            delete_response = requests.delete(
-                                                f"{API_URL}/admin/dummy/{f['file_id']}",
-                                                params={"tenant": tenant_id},
-                                                timeout=30,
-                                            )
-                                        else:
-                                            delete_response = requests.delete(
-                                                f"{API_URL}/admin/files/{f['file_id']}",
-                                                params={"tenant": tenant_id},
-                                                timeout=30,
-                                            )
+                                        delete_response = requests.delete(
+                                            f"{API_URL}/admin/files/{f['file_id']}",
+                                            params={"tenant": tenant_id},
+                                            timeout=30,
+                                        )
                                         if delete_response.status_code == 200:
                                             st.success(f"{f['filename']} を削除しました")
                                             st.rerun()
@@ -265,93 +255,200 @@ def admin_page():
         st.error(f"API通信エラー: {e}")
 
     # -------------------------------------------------------------------------
-    # ダミーデータ生成
+    # 正規化辞書管理
     # -------------------------------------------------------------------------
+    # 【このセクションの役割】
+    # normalization_dict を管理画面から直接編集できるようにする。
+    # 辞書は PDF 処理時の表記ゆれ統一（canonical + variants）に使われる。
+    #
+    # 【表示構成】
+    # 1. フィールド選択（機器/機器部品/計測箇所/点検項目）
+    # 2. そのフィールドの辞書一覧（expander展開で variant 編集）
+    # 3. 新規canonical登録フォーム
     st.divider()
-    st.header("ダミーデータ生成")
-    st.caption("既存データをテンプレートに、経年劣化をシミュレーションしたダミーデータを生成します")
+    st.header("正規化辞書管理")
+    st.caption("PDF構造化時に使われる表記ゆれ辞書（canonical + variants）を編集します")
 
+    NORMALIZATION_FIELDS = ["機器", "機器部品", "計測箇所", "点検項目"]
+
+    selected_field = st.selectbox(
+        "フィールド選択",
+        options=NORMALIZATION_FIELDS,
+        help="編集する正規化フィールドを選択",
+        key="norm_dict_field",
+    )
+
+    # ---- 一覧取得 ----
     try:
-        # テンプレート選択用に処理済みファイル一覧を取得
-        files_resp = requests.get(
-            f"{API_URL}/admin/files",
-            params={"tenant": tenant_id},
+        list_resp = requests.get(
+            f"{API_URL}/admin/normalization-dict",
+            params={"field": selected_field},
             timeout=30,
         )
-        if files_resp.status_code == 200:
-            all_files = files_resp.json()
-            # 処理済みかつダミーでないファイルだけ選択肢にする
-            template_files = [
-                f for f in all_files
-                if f.get("processed") and not f["filename"].startswith("【ダミー】")
-            ]
+    except requests.exceptions.RequestException as e:
+        st.error(f"辞書取得エラー: {e}")
+        list_resp = None
 
-            if template_files:
-                # テンプレート選択
-                template_options = {
-                    f["filename"]: f["file_id"]
-                    for f in template_files
-                }
-                selected_name = st.selectbox(
-                    "テンプレート選択",
-                    options=list(template_options.keys()),
-                    help="ダミーデータの元になるファイルを選択",
-                )
-                source_file_id = template_options[selected_name]
+    if list_resp and list_resp.status_code == 200:
+        entries = list_resp.json().get("entries", [])
 
-                # 年度範囲
-                col1, col2 = st.columns(2)
-                with col1:
-                    start_year = st.number_input("開始年", min_value=2000, max_value=2050, value=2015)
-                with col2:
-                    end_year = st.number_input("終了年", min_value=2000, max_value=2050, value=2025)
+        st.caption(f"[{selected_field}] 登録数: {len(entries)}件")
 
-                # 修繕年の選択
-                year_range = list(range(int(start_year), int(end_year) + 1))
-                repair_years = st.multiselect(
-                    "修繕年（修繕があった年を選択）",
-                    options=year_range,
-                    help="修繕年には測定値が改善（初期値方向に回復）します",
-                )
+        if not entries:
+            st.info("このフィールドの辞書はまだ空です。下のフォームから追加してください。")
 
-                # 生成ボタン
-                if st.button("ダミーデータを生成", type="primary"):
-                    with st.spinner("ダミーデータ生成中..."):
-                        try:
-                            gen_resp = requests.post(
-                                f"{API_URL}/admin/dummy/generate",
-                                json={
-                                    "source_file_id": source_file_id,
-                                    "tenant": tenant_id,
-                                    "start_year": int(start_year),
-                                    "end_year": int(end_year),
-                                    "repair_years": repair_years,
-                                },
-                                timeout=60,
-                            )
-                            if gen_resp.status_code == 200:
-                                gen_result = gen_resp.json()
-                                if gen_result.get("success"):
-                                    st.success(
-                                        f"生成完了: {gen_result['total_records']}レコード "
-                                        f"（{gen_result['year_range']}）"
-                                    )
+        for entry in entries:
+            entry_id = entry["id"]
+            canonical = entry["canonical"]
+            variants = entry["variants"]
+            variant_badge = f"（variant {len(variants)}件）" if variants else ""
+
+            with st.expander(f"{canonical} {variant_badge}", expanded=False):
+                # -- canonicalリネーム --
+                col_rename, col_btn = st.columns([4, 1])
+                with col_rename:
+                    new_canonical = st.text_input(
+                        "canonical（正規名）",
+                        value=canonical,
+                        key=f"rename_{entry_id}",
+                    )
+                with col_btn:
+                    st.write("")  # ボタン位置調整用の空行
+                    if st.button("リネーム", key=f"rename_btn_{entry_id}"):
+                        if new_canonical.strip() and new_canonical != canonical:
+                            try:
+                                rename_resp = requests.put(
+                                    f"{API_URL}/admin/normalization-dict/{entry_id}",
+                                    json={"canonical": new_canonical.strip()},
+                                    timeout=30,
+                                )
+                                if rename_resp.status_code == 200:
+                                    st.success(f"{canonical} → {new_canonical} にリネームしました")
                                     st.rerun()
                                 else:
-                                    st.error(f"生成失敗: {gen_result.get('error')}")
-                            else:
-                                try:
-                                    detail = gen_resp.json().get("detail", "不明なエラー")
-                                except Exception:
-                                    detail = f"サーバーエラー (status: {gen_resp.status_code})"
-                                st.error(f"生成失敗: {detail}")
-                        except requests.exceptions.RequestException as e:
-                            st.error(f"通信エラー: {e}")
-            else:
-                st.info("テンプレートとなる処理済みファイルがありません。先にPDFをアップロード・処理してください。")
+                                    detail = rename_resp.json().get("detail", "不明なエラー")
+                                    st.error(f"リネーム失敗: {detail}")
+                            except requests.exceptions.RequestException as e:
+                                st.error(f"通信エラー: {e}")
 
-    except requests.exceptions.RequestException as e:
-        st.error(f"API通信エラー: {e}")
+                # -- variants 表示と削除 --
+                st.write("**variants（表記ゆれ）**")
+                if variants:
+                    for i, v in enumerate(variants):
+                        col_v, col_del = st.columns([5, 1])
+                        with col_v:
+                            st.code(v, language=None)
+                        with col_del:
+                            if st.button("削除", key=f"del_v_{entry_id}_{i}"):
+                                new_variants = [vv for vv in variants if vv != v]
+                                try:
+                                    upd_resp = requests.put(
+                                        f"{API_URL}/admin/normalization-dict/{entry_id}",
+                                        json={"variants": new_variants},
+                                        timeout=30,
+                                    )
+                                    if upd_resp.status_code == 200:
+                                        st.success(f"variant削除: {v}")
+                                        st.rerun()
+                                    else:
+                                        st.error("variant削除に失敗しました")
+                                except requests.exceptions.RequestException as e:
+                                    st.error(f"通信エラー: {e}")
+                else:
+                    st.caption("（未登録）")
+
+                # -- variant 追加 --
+                col_new, col_add = st.columns([4, 1])
+                with col_new:
+                    new_variant = st.text_input(
+                        "追加するvariant",
+                        key=f"new_v_{entry_id}",
+                        placeholder="例: No.2微粉炭機D",
+                    )
+                with col_add:
+                    st.write("")
+                    if st.button("variant追加", key=f"add_v_btn_{entry_id}"):
+                        if new_variant.strip():
+                            merged = variants + [new_variant.strip()]
+                            # 重複除去
+                            merged = list(dict.fromkeys(merged))
+                            try:
+                                upd_resp = requests.put(
+                                    f"{API_URL}/admin/normalization-dict/{entry_id}",
+                                    json={"variants": merged},
+                                    timeout=30,
+                                )
+                                if upd_resp.status_code == 200:
+                                    st.success(f"variant追加: {new_variant.strip()}")
+                                    st.rerun()
+                                else:
+                                    st.error("variant追加に失敗しました")
+                            except requests.exceptions.RequestException as e:
+                                st.error(f"通信エラー: {e}")
+
+                # -- エントリ削除 --
+                st.divider()
+                if st.button(
+                    "このエントリを削除",
+                    key=f"del_entry_{entry_id}",
+                    type="secondary",
+                ):
+                    try:
+                        del_resp = requests.delete(
+                            f"{API_URL}/admin/normalization-dict/{entry_id}",
+                            timeout=30,
+                        )
+                        if del_resp.status_code == 200:
+                            st.success(f"{canonical} を削除しました")
+                            st.rerun()
+                        else:
+                            st.error("削除に失敗しました")
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"通信エラー: {e}")
+
+        # ---- 新規canonical登録 ----
+        st.divider()
+        st.subheader("新規canonical登録")
+        with st.form(key=f"new_canonical_form_{selected_field}"):
+            new_canonical_name = st.text_input(
+                "canonical（正規名）",
+                placeholder=f"例: 2号機微粉炭機D（{selected_field}）",
+            )
+            new_variants_text = st.text_input(
+                "variants（カンマ区切りで複数可、省略可）",
+                placeholder="例: No.2微粉炭機D, #2微粉炭機D",
+            )
+            submitted = st.form_submit_button("追加", type="primary")
+            if submitted:
+                if not new_canonical_name.strip():
+                    st.error("canonicalは必須です")
+                else:
+                    variants_list = [
+                        v.strip() for v in new_variants_text.split(",") if v.strip()
+                    ]
+                    try:
+                        create_resp = requests.post(
+                            f"{API_URL}/admin/normalization-dict",
+                            json={
+                                "field": selected_field,
+                                "canonical": new_canonical_name.strip(),
+                                "variants": variants_list,
+                            },
+                            timeout=30,
+                        )
+                        if create_resp.status_code == 200:
+                            st.success(f"登録完了: [{selected_field}] {new_canonical_name}")
+                            st.rerun()
+                        else:
+                            try:
+                                detail = create_resp.json().get("detail", "不明なエラー")
+                            except Exception:
+                                detail = f"サーバーエラー (status: {create_resp.status_code})"
+                            st.error(f"登録失敗: {detail}")
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"通信エラー: {e}")
+    elif list_resp is not None:
+        st.error(f"辞書取得失敗 (status: {list_resp.status_code})")
 
 
 # =============================================================================

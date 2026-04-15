@@ -31,6 +31,7 @@ from openai import OpenAI
 
 from core.config import get_settings
 from core.logging import get_logger
+from services.pipeline import run_pipeline
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -223,7 +224,7 @@ JSON_SCHEMA = {
                         },
                         "機器部品": {
                             "type": ["string", "null"],
-                            "description": "図面上の名称・もしくは記録項目に記載のケースが多い。例：リンクサポート隙間計測"
+                            "description": "図面上の名称・もしくは記録項目に記載のケースが多い。例：リンクサポート"
                         },
                         "計測箇所": {
                             "type": ["string", "null"],
@@ -451,6 +452,9 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
             # レコードごとにドキュメントを作成
             records = extraction_result["data"].get("records", [])
             for record_idx, record_data in enumerate(records):
+                # 正規化パイプライン適用（表記ゆれの統一）
+                normalized_data = await run_pipeline(record_data, db)
+
                 record_doc = {
                     # メタデータ
                     "file_id": file_id,
@@ -462,10 +466,12 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
                     "processed_at": processed_at,
                     "page_number": page_num,
                     "table_index": record_idx + 1,
-                    "table_title": record_data.get("点検項目"),
+                    "table_title": normalized_data.get("点検項目"),
                     "image_path": image_path,
-                    # データ（スキーマに従った構造化データ）
-                    "data": record_data,
+                    # データ（正規化済みの構造化データ）
+                    "data": normalized_data,
+                    # 元データ（正規化前。問題発生時のロールバック用）
+                    "data_raw": record_data,
                 }
                 await db.pages.insert_one(record_doc)
                 records_processed += 1

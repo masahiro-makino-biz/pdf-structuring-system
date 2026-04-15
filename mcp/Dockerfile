@@ -13,28 +13,12 @@ WORKDIR /app
 # =============================================================================
 # システムライブラリのインストール
 # =============================================================================
-# 【poppler-utils とは】
-# PDFを画像に変換するためのコマンドラインツール群
-# pdf2imageライブラリが内部でpopplerを使用する
-#
-# 【なぜ apt-get が必要か】
-# Pythonライブラリ（pip）だけでは動かないソフトウェアがある
-# popplerはC/C++で書かれたシステムレベルのツールなので、
-# OSのパッケージマネージャー（apt-get）でインストールが必要
-#
-# 【--no-install-recommends】
-# 推奨パッケージをスキップして最小限のインストール
-# コンテナサイズを小さく保つため
-#
-# 【rm -rf /var/lib/apt/lists/*】
-# aptのキャッシュを削除してコンテナサイズを削減
 # 【fonts-ipafont-gothic】日本語フォント
 # Plotlyでグラフに日本語を表示するために必要
 # 【fontconfig】fc-cacheコマンドを提供（フォントキャッシュ更新用）
 # 【gcc, g++, python3-dev】Prophetのビルドに必要なCコンパイラと開発ヘッダ
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    poppler-utils \
     fonts-ipafont-gothic \
     fontconfig \
     gcc \

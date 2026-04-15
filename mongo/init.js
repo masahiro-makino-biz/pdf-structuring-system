@@ -25,3 +25,13 @@ db.createView("pages_default", "pages", [
 ]);
 
 print("Created view: pages_default");
+
+// 正規化辞書コレクション用インデックス
+// field（対象フィールド名）+ canonical（正規名）の組み合わせで一意制約
+// AI自動マッチングが表記ゆれを検出した際、辞書に自動登録する
+db.normalization_dict.createIndex(
+  { "field": 1, "canonical": 1 },
+  { unique: true }
+);
+
+print("Created index: normalization_dict (field + canonical)");
