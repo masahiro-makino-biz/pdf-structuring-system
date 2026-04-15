@@ -197,14 +197,14 @@ def admin_page():
                                 if records:
                                     # タブでレコードごとに切り替え表示
                                     tab_labels = [
-                                        f"P{r.get('page_number', '?')}-{r.get('table_index', '?')}: {(r.get('data', {}).get('点検項目') or '記録')[:15]}"
+                                        f"P{r.get('page_number', '?')}-{r.get('table_index', '?')}: {(r.get('data', {}).get('測定物理量') or '記録')[:15]}"
                                         for r in records
                                     ]
                                     tabs = st.tabs(tab_labels)
                                     for tab, record in zip(tabs, records):
                                         with tab:
                                             record_data = record.get("data", {})
-                                            st.caption(f"機器: {record_data.get('機器', 'N/A')} / 点検項目: {record_data.get('点検項目', 'N/A')}")
+                                            st.caption(f"機器: {record_data.get('機器', 'N/A')} / 部品: {record_data.get('機器部品', 'N/A')} / 物理量: {record_data.get('測定物理量', 'N/A')}")
                                             image_path = record.get("image_path")
                                             if image_path:
                                                 try:
@@ -262,14 +262,14 @@ def admin_page():
     # 辞書は PDF 処理時の表記ゆれ統一（canonical + variants）に使われる。
     #
     # 【表示構成】
-    # 1. フィールド選択（機器/機器部品/計測箇所/点検項目）
+    # 1. フィールド選択（点検タイトル/機器/機器部品/測定物理量）
     # 2. そのフィールドの辞書一覧（expander展開で variant 編集）
     # 3. 新規canonical登録フォーム
     st.divider()
     st.header("正規化辞書管理")
     st.caption("PDF構造化時に使われる表記ゆれ辞書（canonical + variants）を編集します")
 
-    NORMALIZATION_FIELDS = ["機器", "機器部品", "計測箇所", "点検項目"]
+    NORMALIZATION_FIELDS = ["点検タイトル", "機器", "機器部品", "測定物理量"]
 
     selected_field = st.selectbox(
         "フィールド選択",
