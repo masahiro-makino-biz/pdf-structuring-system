@@ -18,18 +18,35 @@
 #
 # =============================================================================
 
+import base64
 import json
 from datetime import datetime
 from collections import Counter
+from io import BytesIO
 
 from PIL import Image
+from openai import OpenAI
 
 from core.config import get_settings
 from core.logging import get_logger
-from services.pdf_processor import get_openai_client, image_to_base64
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+
+def _get_openai_client():
+    """LiteLLM経由のOpenAIクライアントを取得"""
+    return OpenAI(
+        api_key=settings.litellm_api_key,
+        base_url=f"{settings.litellm_url}/v1",
+    )
+
+
+def _image_to_base64(image: Image.Image, format: str = "PNG") -> str:
+    """PIL ImageをBase64文字列に変換"""
+    buffer = BytesIO()
+    image.save(buffer, format=format)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 # =============================================================================
@@ -184,7 +201,7 @@ async def ai_judge_key_mapping(
         {"matched_key": "タイヤ1", "confidence": 0.92, "reasoning": "..."}
         or {"matched_key": null, "confidence": 0.0, "reasoning": "判定不能"}
     """
-    client = get_openai_client()
+    client = _get_openai_client()
 
     # 画像を読み込んでBase64変換
     try:
@@ -192,12 +209,12 @@ async def ai_judge_key_mapping(
         max_size = 2048
         if max(img1.size) > max_size:
             img1.thumbnail((max_size, max_size), Image.LANCZOS)
-        b64_minority = image_to_base64(img1)
+        b64_minority = _image_to_base64(img1)
 
         img2 = Image.open(majority_image_path)
         if max(img2.size) > max_size:
             img2.thumbnail((max_size, max_size), Image.LANCZOS)
-        b64_majority = image_to_base64(img2)
+        b64_majority = _image_to_base64(img2)
     except Exception as e:
         logger.warning(f"画像読み込みエラー: {e}")
         return {"matched_key": None, "confidence": 0.0, "reasoning": f"画像読み込みエラー: {e}"}
