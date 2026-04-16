@@ -103,6 +103,7 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
                     "keys": "$measurement_keys",
                     "page_id": "$_id",
                     "image_path": "$image_path",
+                    "measurements": "$data.測定値",
                 }
             },
             "total_records": {"$sum": 1},
@@ -153,6 +154,7 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
                 "key": mk,
                 "page_id": sample.get("page_id"),
                 "image_path": sample.get("image_path"),
+                "measurements": sample.get("measurements", {}),
             })
 
         inconsistent_groups.append({
@@ -166,6 +168,7 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
             "majority_sample": {
                 "page_id": majority_sample.get("page_id"),
                 "image_path": majority_sample.get("image_path"),
+                "measurements": majority_sample.get("measurements", {}),
             },
             "minority_samples": minority_samples,
             "total_records": group["total_records"],
@@ -187,15 +190,19 @@ async def ai_judge_key_mapping(
     majority_keys: list[str],
     minority_image_path: str,
     majority_image_path: str,
+    minority_measurements: dict = None,
+    majority_measurements: dict = None,
 ) -> dict:
     """
-    2枚のPDF画像をAIに見せて、少数派キーが多数派キーのどれに対応するか判定する。
+    2枚のPDF画像 + 構造化JSONをAIに見せて、少数派キーが多数派キーのどれに対応するか判定する。
 
     Args:
         minority_key: 少数派の測定値キー（例: "A"）
         majority_keys: 多数派の測定値キーリスト（例: ["タイヤ1", "タイヤ2", "タイヤ3"]）
         minority_image_path: 少数派キーが含まれるPDFページの画像パス
         majority_image_path: 多数派キーが含まれるPDFページの画像パス
+        minority_measurements: 少数派レコードの測定値dict（例: {"A": 0.10, "B": 0.13}）
+        majority_measurements: 多数派レコードの測定値dict（例: {"タイヤ1": 0.15, "タイヤ2": 0.18}）
 
     Returns:
         {"matched_key": "タイヤ1", "confidence": 0.92, "reasoning": "..."}
@@ -219,12 +226,23 @@ async def ai_judge_key_mapping(
         logger.warning(f"画像読み込みエラー: {e}")
         return {"matched_key": None, "confidence": 0.0, "reasoning": f"画像読み込みエラー: {e}"}
 
+    # JSON データを判断材料としてプロンプトに含める
+    json_context = ""
+    if minority_measurements:
+        json_context += f"【画像1の構造化データ】{json.dumps(minority_measurements, ensure_ascii=False)}\n"
+    if majority_measurements:
+        json_context += f"【画像2の構造化データ】{json.dumps(majority_measurements, ensure_ascii=False)}\n"
+
     prompt = (
-        f"2枚の点検記録画像を比較して、測定値キーの対応を判定してください。\n\n"
+        f"2枚の点検記録画像と構造化データを比較して、測定値キーの対応を判定してください。\n\n"
         f"【画像1】少数派キー「{minority_key}」を含む表\n"
         f"【画像2】多数派キー {majority_keys} を含む表\n\n"
+        f"{json_context}\n"
         f"画像1の「{minority_key}」は、画像2の {majority_keys} のどれに対応しますか？\n"
-        f"表の位置関係、行列の配置、値の近さなどを総合的に判断してください。\n\n"
+        f"判断材料:\n"
+        f"- 画像内の表の位置関係、行列の配置\n"
+        f"- 構造化データの値の近さ（同じ測定点なら値が近い傾向がある）\n"
+        f"- 表の行番号や並び順\n\n"
         f"JSON形式で回答:\n"
         f'{{"matched_key": "対応するキー名 or null", "confidence": 0.0-1.0, "reasoning": "判定理由"}}\n'
     )
@@ -314,12 +332,14 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
             if existing:
                 continue  # 既に登録済み
 
-            # AI判定
+            # AI判定（画像 + JSON データ）
             ai_result = await ai_judge_key_mapping(
                 minority_key=minority_key,
                 majority_keys=majority_keys,
                 minority_image_path=minority_image,
                 majority_image_path=majority_image,
+                minority_measurements=minority_sample.get("measurements"),
+                majority_measurements=group_info["majority_sample"].get("measurements"),
             )
 
             # 結果をDBに保存
