@@ -450,6 +450,158 @@ def admin_page():
     elif list_resp is not None:
         st.error(f"辞書取得失敗 (status: {list_resp.status_code})")
 
+    # -------------------------------------------------------------------------
+    # 測定値キー照合
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.header("測定値キー照合")
+    st.caption("同じ機器・部品・物理量のレコード間で異なる測定値キーをAIが突合し、人間がレビューします")
+
+    # スキャン実行ボタン
+    if st.button("照合スキャン実行", type="primary", key="reconciliation_scan"):
+        with st.spinner("スキャン中...（AI画像比較を実行しています）"):
+            try:
+                scan_resp = requests.post(
+                    f"{API_URL}/admin/reconciliation/scan",
+                    params={"tenant": tenant_id},
+                    timeout=600,
+                )
+                if scan_resp.status_code == 200:
+                    scan_result = scan_resp.json()
+                    st.success(
+                        f"スキャン完了: {scan_result.get('groups_found', 0)}グループで"
+                        f"{scan_result.get('mappings_created', 0)}件の照合候補を検出"
+                    )
+                    st.rerun()
+                else:
+                    st.error(f"スキャン失敗 (status: {scan_resp.status_code})")
+            except requests.exceptions.RequestException as e:
+                st.error(f"通信エラー: {e}")
+
+    # ステータスフィルタ
+    status_filter = st.selectbox(
+        "ステータス",
+        options=["all", "pending", "approved", "rejected"],
+        format_func=lambda x: {"all": "全て", "pending": "未レビュー", "approved": "承認済み", "rejected": "却下"}[x],
+        key="reconciliation_status",
+    )
+
+    # レポート取得
+    try:
+        report_resp = requests.get(
+            f"{API_URL}/admin/reconciliation/report",
+            params={"status": status_filter},
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        st.error(f"レポート取得エラー: {e}")
+        report_resp = None
+
+    if report_resp and report_resp.status_code == 200:
+        report = report_resp.json()
+        mappings = report.get("mappings", [])
+
+        st.caption(f"照合候補: {len(mappings)}件")
+
+        if not mappings:
+            st.info("照合候補がありません。スキャンを実行するか、フィルタを変更してください。")
+
+        for m in mappings:
+            m_id = m["id"]
+            group = m.get("group", {})
+            group_label = f"{group.get('機器', '?')} / {group.get('機器部品', '?')} / {group.get('測定物理量', '?')}"
+            status_emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(m["status"], "")
+            confidence = m.get("ai_confidence", 0)
+
+            with st.expander(
+                f"{status_emoji} 「{m['variant_key']}」→「{m.get('canonical_key', '?')}」"
+                f"（{group_label}、確信度: {confidence:.0%}）",
+                expanded=False,
+            ):
+                # AI判定結果
+                st.write(f"**AI判定理由**: {m.get('ai_reasoning', '不明')}")
+                st.write(f"**確信度**: {confidence:.0%}")
+
+                # 画像表示（横並び）
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**少数派**: 「{m['variant_key']}」")
+                    if m.get("variant_image_path"):
+                        try:
+                            st.image(m["variant_image_path"], use_container_width=True)
+                        except Exception:
+                            st.warning("画像を表示できません")
+                with col2:
+                    st.write(f"**多数派**: 「{m.get('canonical_key', '?')}」")
+                    if m.get("canonical_image_path"):
+                        try:
+                            st.image(m["canonical_image_path"], use_container_width=True)
+                        except Exception:
+                            st.warning("画像を表示できません")
+
+                # アクションボタン（pending の場合のみ）
+                if m["status"] == "pending":
+                    col_a, col_r, col_m = st.columns(3)
+                    with col_a:
+                        if st.button("承認", key=f"approve_{m_id}", type="primary"):
+                            try:
+                                requests.put(
+                                    f"{API_URL}/admin/reconciliation/{m_id}",
+                                    json={"action": "approve"},
+                                    timeout=30,
+                                )
+                                st.rerun()
+                            except requests.exceptions.RequestException as e:
+                                st.error(f"通信エラー: {e}")
+                    with col_r:
+                        if st.button("却下", key=f"reject_{m_id}"):
+                            try:
+                                requests.put(
+                                    f"{API_URL}/admin/reconciliation/{m_id}",
+                                    json={"action": "reject"},
+                                    timeout=30,
+                                )
+                                st.rerun()
+                            except requests.exceptions.RequestException as e:
+                                st.error(f"通信エラー: {e}")
+                    with col_m:
+                        new_key = st.text_input("修正キー", key=f"mod_key_{m_id}")
+                        if st.button("修正して承認", key=f"modify_{m_id}"):
+                            if new_key.strip():
+                                try:
+                                    requests.put(
+                                        f"{API_URL}/admin/reconciliation/{m_id}",
+                                        json={"action": "modify", "modified_key": new_key.strip()},
+                                        timeout=30,
+                                    )
+                                    st.rerun()
+                                except requests.exceptions.RequestException as e:
+                                    st.error(f"通信エラー: {e}")
+
+        # 承認済みマッピング一括適用ボタン
+        approved_count = sum(1 for m in mappings if m["status"] == "approved")
+        if approved_count > 0:
+            st.divider()
+            if st.button(f"承認済み {approved_count} 件をDBに適用", type="primary", key="apply_mappings"):
+                with st.spinner("適用中..."):
+                    try:
+                        apply_resp = requests.post(
+                            f"{API_URL}/admin/reconciliation/apply",
+                            params={"tenant": tenant_id},
+                            timeout=120,
+                        )
+                        if apply_resp.status_code == 200:
+                            apply_result = apply_resp.json()
+                            st.success(f"適用完了: {apply_result.get('records_updated', 0)}件のレコードを更新")
+                            st.rerun()
+                        else:
+                            st.error(f"適用失敗 (status: {apply_resp.status_code})")
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"通信エラー: {e}")
+
+    elif report_resp is not None:
+        st.error(f"レポート取得失敗 (status: {report_resp.status_code})")
+
 
 # =============================================================================
 # User画面 - チャット
