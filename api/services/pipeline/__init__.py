@@ -15,6 +15,7 @@
 
 from services.pipeline.normalize_rules import normalize_by_rules
 from services.pipeline.normalize_ai import normalize_by_ai
+from services.reconciliation import apply_key_mappings
 
 
 async def run_pipeline(record_data: dict, db=None) -> dict:
@@ -24,6 +25,7 @@ async def run_pipeline(record_data: dict, db=None) -> dict:
     【処理順序】
     1. ルールベース正規化: 全角/半角、カナ、丸数字等を機械的に統一
     2. AI自動マッチング: ルールで対応できない表記ゆれをAIが辞書で統一
+    3. 測定値キー突合: 承認済みのキーマッピングを自動適用（"A" → "タイヤ1" 等）
 
     Args:
         record_data: GPT-4oが出力した構造化データ（data フィールドの中身）
@@ -36,5 +38,6 @@ async def run_pipeline(record_data: dict, db=None) -> dict:
 
     if db is not None:
         result = await normalize_by_ai(result, db)
+        result = await apply_key_mappings(result, db)
 
     return result

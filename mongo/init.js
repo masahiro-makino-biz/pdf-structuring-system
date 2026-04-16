@@ -35,3 +35,15 @@ db.normalization_dict.createIndex(
 );
 
 print("Created index: normalization_dict (field + canonical)");
+
+// 測定値キー突合コレクション用インデックス
+// 同一グループ内の同一 variant_key に対して重複マッピングを防止
+db.key_mappings.createIndex(
+  { "group.機器": 1, "group.機器部品": 1, "group.測定物理量": 1, "variant_key": 1 },
+  { unique: true }
+);
+
+// ステータスでのフィルタ用（pending/approved/rejected）
+db.key_mappings.createIndex({ "status": 1 });
+
+print("Created indexes: key_mappings (group + variant_key, status)");

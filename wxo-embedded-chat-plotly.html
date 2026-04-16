@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WxO Embedded Chat - Plotly Graph Viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f4f4f4;
+      color: #161616;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ヘッダー */
+    header {
+      background-color: #0f62fe;
+      color: #ffffff;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    header .logo {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    header .subtext {
+      font-size: 13px;
+      opacity: 0.85;
+      margin-top: 2px;
+    }
+
+    /* フッター */
+    footer {
+      text-align: center;
+      padding: 16px;
+      font-size: 12px;
+      color: #8d8d8d;
+      background-color: #e0e0e0;
+    }
+
+    /* チャットウィジェットのルート要素 */
+    #root {
+      /* WxO の埋め込みチャットウィジェットがここにマウントされます */
+    }
+
+    /* ─── チャット内インライングラフ ─────────────────────────────
+       チャットメッセージの末尾に直接注入されるグラフコンテナ。
+    ──────────────────────────────────────────────────────────── */
+    .wxo-inline-graph {
+      margin-top: 12px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #dde1e7;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
+      background: #ffffff;
+      font-family: 'IBM Plex Sans', Arial, sans-serif;
+    }
+
+    .wxo-inline-graph-header {
+      padding: 8px 14px;
+      background: linear-gradient(90deg, #0043ce 0%, #0f62fe 100%);
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .wxo-inline-graph-header .badge-live {
+      margin-left: auto;
+      background: rgba(255, 255, 255, 0.20);
+      border-radius: 10px;
+      padding: 1px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .wxo-inline-graph iframe {
+      width: 100%;
+      height: 440px;
+      border: none;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ヘッダー -->
+  <header>
+    <div>
+      <div class="logo">IBM watsonx Orchestrate</div>
+      <div class="subtext">Embedded Agent Chat</div>
+    </div>
+  </header>
+
+  <!-- フッター -->
+  <footer>
+    &copy; 2026 IBM Corporation — watsonx Orchestrate Embedded Chat
+  </footer>
+
+  <!-- WxO チャットウィジェットのルート要素（必須） -->
+  <div id="root"></div>
+
+  <script>
+
+    /**
+     * 文字列から Plotly HTML ブロックを抽出する。
+     * - <!DOCTYPE html>... 形式
+     * - <html>...</html> 形式（DOCTYPE なし ← MCPサーバーの出力形式）
+     * - コードブロック内の HTML
+     * - エスケープされた \\n を含む文字列
+     */
+    function extractHtml(text) {
+      if (!text) return null;
+
+      // エスケープされた改行を実際の改行に変換（MCPが \\n で返す場合）
+      const unescaped = text.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
+
+      // コードブロック内を優先
+      const codeBlock = unescaped.match(/```(?:html)?\s*((?:<!DOCTYPE|<html)[\s\S]*?<\/html>)\s*```/i);
+      if (codeBlock) return codeBlock[1];
+
+      // <!DOCTYPE html>... 形式
+      const doctype = unescaped.match(/(<!DOCTYPE[\s\S]*?<\/html>)/i);
+      if (doctype) return doctype[1];
+
+      // <html>...</html> 形式（MCPサーバーの出力）
+      const htmlTag = unescaped.match(/(<html[\s\S]*?<\/html>)/i);
+      if (htmlTag) return htmlTag[1];
+
+      return null;
+    }
+
+    /**
+     * チャットメッセージの末尾に Plotly HTML をインライン表示する。
+     * htmlOrUrl が URL の場合は fetch で取得、HTML文字列の場合はそのまま srcdoc に設定。
+     */
+    function showGraph(htmlOrUrl, title) {
+      console.log('[WxO] showGraph called, length:', htmlOrUrl.length);
+
+      if (htmlOrUrl.startsWith('http')) {
+        // S3のURLからHTMLコンテンツを取得してsrcdocに表示
+        console.log('[WxO] Fetching HTML from URL...');
+        fetch(htmlOrUrl)
+          .then(function(resp) { return resp.text(); })
+          .then(function(content) {
+            console.log('[WxO] Fetched HTML, length:', content.length);
+            injectGraphInline(content, title);
+          })
+          .catch(function(err) {
+            console.error('[WxO] Fetch error, trying iframe.src fallback:', err);
+            injectGraphInline(null, title, htmlOrUrl);
+          });
+        return;
+      }
+
+      // HTML テキストの場合: そのまま表示
+      injectGraphInline(htmlOrUrl, title);
+    }
+
+    /**
+     * 実際に iframe をチャットメッセージに注入する。
+     * html が指定されれば srcdoc、srcUrl が指定されれば src を使う。
+     * receive イベント後に DOM が更新されるまで最大 retries 回リトライする。
+     */
+    function injectGraphInline(html, title, srcUrl) {
+      var titleMatch = html ? html.match(/<title>(.*?)<\/title>/i) : null;
+      var graphTitle = title || (titleMatch ? titleMatch[1] : 'グラフ');
+
+      function tryInject(retries) {
+        var agentMsgs = document.querySelectorAll('.agentResponse.message-wrapper');
+        if (!agentMsgs.length) {
+          if (retries > 0) { setTimeout(function () { tryInject(retries - 1); }, 400); }
+          return;
+        }
+
+        var lastAgentMsg = agentMsgs[agentMsgs.length - 1];
+
+        // 同一メッセージへの重複注入を防ぐ
+        if (lastAgentMsg.querySelector('.wxo-inline-graph')) return;
+
+        var stepContainer = lastAgentMsg.querySelector('.stepContainer');
+        if (!stepContainer) {
+          if (retries > 0) { setTimeout(function () { tryInject(retries - 1); }, 400); }
+          return;
+        }
+
+        // グラフコンテナを組み立て
+        var container = document.createElement('div');
+        container.className = 'wxo-inline-graph';
+
+        var header = document.createElement('div');
+        header.className = 'wxo-inline-graph-header';
+        header.innerHTML =
+          '<span>\uD83D\uDCCA</span>' +
+          '<span>' + graphTitle + '</span>' +
+          '<span class="badge-live">LIVE</span>';
+
+        var iframe = document.createElement('iframe');
+        iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+        iframe.setAttribute('title', 'Plotly Graph');
+        iframe.style.cssText = 'width:100% !important; height:440px !important; border:none !important; display:block !important; min-height:440px;';
+
+        if (html) {
+          iframe.srcdoc = html;
+        } else if (srcUrl) {
+          iframe.src = srcUrl;
+        }
+
+        container.appendChild(header);
+        container.appendChild(iframe);
+        stepContainer.appendChild(container);
+
+        setTimeout(function () {
+          container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 200);
+
+        console.log('[WxO] Graph injected into chat message.');
+      }
+
+      setTimeout(function () { tryInject(8); }, 500);
+    }
+
+    /**
+     * Plotlyの空プレースホルダーdivをチャット本文から除去する。
+     *
+     * 【なぜ必要か】
+     * MCPツールが返すchart_html（完全なPlotly HTML）がエージェント応答に
+     * 混入すると、WxOチャットUIが<script>タグをサニタイズで除去し、
+     * 結果として「height:500px; width:900px の空div」だけが残って
+     * 大きな空白ブロックとして表示されてしまう。
+     * iframe側では別途正しく描画されているので、この空divは不要。
+     *
+     * 【検出条件】
+     * - inline styleに height:500px と width:900px を含む
+     * - 中身が空（子要素なし かつ テキストなし）
+     */
+    function removeEmptyPlotlyPlaceholders() {
+      var candidates = document.querySelectorAll(
+        '.agentResponse div[style*="height: 500px"][style*="width: 900px"]'
+      );
+      candidates.forEach(function (el) {
+        if (!el.firstElementChild && !el.textContent.trim()) {
+          console.log('[WxO] Removing empty Plotly placeholder:', el.id);
+          el.remove();
+        }
+      });
+    }
+
+    /**
+     * テキストから S3 の presigned URL を抽出する。
+     */
+    function extractS3Url(text) {
+      if (!text) return null;
+      const match = text.match(/(https:\/\/s3\.[^\s"'<>]+\.cloud-object-storage\.appdomain\.cloud\/[^\s"'<>]+)/);
+      return match ? match[1] : null;
+    }
+
+    // ─── WxO チャット イベントハンドラ ──────────────────────────────
+
+    /**
+     * チャットロード時にイベントを登録する。
+     * chatOptions.onLoad コールバックとして渡す。
+     */
+    function onChatLoad(instance) {
+
+      // チャット準備完了
+      instance.on('chat:ready', function (event, instance) {
+        console.log('[WxO] chat:ready');
+      });
+
+      // エージェント応答を受信したとき（デバッグ + HTML抽出）
+      instance.on('receive', function (event, instance) {
+        // ── デバッグ: 実際に来ているデータを確認 ──
+        console.log('[WxO] receive event (full):', JSON.stringify(event?.message, null, 2));
+
+        // DOM描画後にPlotlyの空プレースホルダーを除去（空白ブロック対策）
+        // 複数タイミングで実行するのはWxO側のDOM更新が非同期のため
+        setTimeout(removeEmptyPlotlyPlaceholders, 300);
+        setTimeout(removeEmptyPlotlyPlaceholders, 800);
+        setTimeout(removeEmptyPlotlyPlaceholders, 1500);
+
+        const contents = event?.message?.content ?? [];
+        for (const item of contents) {
+          // files 配列から S3 URL を検出（file_download レスポンス用）
+          const files = item?.files ?? [];
+          for (const file of files) {
+            if (file?.url && file.fileName?.endsWith('.html')) {
+              console.log('[WxO] S3 file URL detected:', file.fileName);
+              showGraph(file.url, file.fileName.replace('.html', ''));
+              return;
+            }
+          }
+
+          // text フィールドを確認
+          const candidates = [
+            item?.text,
+            item?.structuredContent?.result,
+            typeof item?.data === 'string' ? item.data : null,
+          ];
+
+          for (const candidate of candidates) {
+            if (!candidate) continue;
+
+            // S3 URL を検出（presigned URL → iframeのsrcで表示）
+            const s3Url = extractS3Url(candidate);
+            if (s3Url) {
+              console.log('[WxO] S3 URL detected in text, rendering in iframe...');
+              showGraph(s3Url, 'グラフ');
+              return;
+            }
+
+            // HTML テキストを検出（従来方式 → iframeのsrcdocで表示）
+            const html = extractHtml(candidate);
+            if (html) {
+              console.log('[WxO] Plotly HTML detected, rendering in iframe...');
+              const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+              showGraph(html, titleMatch ? titleMatch[1] : 'グラフ');
+              return;
+            }
+          }
+        }
+        console.log('[WxO] No graph data found in this message.');
+      });
+
+      // JWT トークン期限切れ時の自動更新（本番時に実装）
+      // instance.on('authTokenNeeded', async function (event, instance) {
+      //   const newToken = await fetch('/api/token').then(r => r.text());
+      //   event.authToken = newToken;
+      // });
+    }
+
+    // ─── WxO 埋め込みチャット設定 ────────────────────────────────────
+    window.wxOConfiguration = {
+      orchestrationID: "41e6be7f52ff448d93dcec59ce607fcb_98497123-b353-459c-844f-801907c545b1",
+      hostURL: "https://jp-tok.watson-orchestrate.cloud.ibm.com",
+      rootElementID: "root",
+      showLauncher: false,
+      deploymentPlatform: "ibmcloud",
+      crn: "crn:v1:bluemix:public:watsonx-orchestrate:jp-tok:a/41e6be7f52ff448d93dcec59ce607fcb:98497123-b353-459c-844f-801907c545b1::",
+      chatOptions: {
+        agentId: "b9d29b20-ef0f-4c6e-861e-93b5a618774c",
+        onLoad: onChatLoad,
+      },
+      layout: {
+        form: "fullscreen-overlay",
+        showOrchestrateHeader: true,
+      },
+      // 【テスト時】WxO UI → プロフィール → Settings → Embed Security → Off
+      // 【本番時】サーバーサイドで生成した JWT を設定
+      // identityToken: "JWTトークン",
+    };
+
+    // WxO チャットローダーの動的読み込み
+    setTimeout(function () {
+      const script = document.createElement("script");
+      script.src = `${window.wxOConfiguration.hostURL}/wxochat/wxoLoader.js?embed=true`;
+      script.addEventListener("load", function () {
+        wxoLoader.init();
+      });
+      document.head.appendChild(script);
+    }, 0);
+  </script>
+
+</body>
+</html>
