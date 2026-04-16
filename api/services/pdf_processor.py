@@ -444,14 +444,13 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
             ],
         })
 
+        # json_object: JSON出力を保証（OpenAI/Azure/Claude全対応）
+        # json_schema（Structured Outputs）はOpenAI専用のためClaude/Bedrockでは使えない
         response = client.chat.completions.create(
             model=settings.litellm_model,
             messages=messages,
             max_tokens=4000,
-            response_format={
-                "type": "json_schema",
-                "json_schema": JSON_SCHEMA
-            }
+            response_format={"type": "json_object"}
         )
 
         result_text = response.choices[0].message.content
