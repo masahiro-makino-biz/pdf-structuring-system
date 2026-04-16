@@ -753,6 +753,128 @@ async def delete_normalization_entry(entry_id: str):
 
 
 # =============================================================================
+# 測定値キー突合エンドポイント
+# =============================================================================
+
+from services.reconciliation import (
+    run_reconciliation_scan,
+    apply_approved_mappings,
+    invalidate_mapping_cache,
+)
+
+
+@app.post("/admin/reconciliation/scan")
+async def reconciliation_scan(
+    tenant: str = Query(default="default", description="テナントID"),
+):
+    """
+    測定値キーの突合スキャンを実行。
+
+    機器+部品+物理量が同じレコード群でキーが不一致のものを検出し、
+    AIで画像比較して対応付けを生成する。結果は key_mappings に保存される。
+    """
+    result = await run_reconciliation_scan(db, tenant)
+    return {"success": True, **result}
+
+
+@app.get("/admin/reconciliation/report")
+async def reconciliation_report(
+    status: str = Query(default="all", description="ステータスフィルタ (pending/approved/rejected/all)"),
+):
+    """突合レポートを取得"""
+    query = {}
+    if status != "all":
+        query["status"] = status
+
+    docs = await db.key_mappings.find(query).sort("created_at", -1).to_list(length=None)
+
+    # ページ情報を取得（画像パス用）
+    mappings = []
+    for doc in docs:
+        # 画像パスを取得
+        canonical_image = None
+        variant_image = None
+        if doc.get("canonical_page_id"):
+            page = await db.pages.find_one(
+                {"_id": doc["canonical_page_id"]},
+                {"image_path": 1}
+            )
+            if page:
+                canonical_image = page.get("image_path")
+        if doc.get("variant_page_id"):
+            page = await db.pages.find_one(
+                {"_id": doc["variant_page_id"]},
+                {"image_path": 1}
+            )
+            if page:
+                variant_image = page.get("image_path")
+
+        mappings.append({
+            "id": str(doc["_id"]),
+            "group": doc.get("group", {}),
+            "canonical_key": doc.get("canonical_key"),
+            "variant_key": doc.get("variant_key"),
+            "ai_confidence": doc.get("ai_confidence", 0),
+            "ai_reasoning": doc.get("ai_reasoning", ""),
+            "status": doc.get("status", "pending"),
+            "canonical_image_path": canonical_image,
+            "variant_image_path": variant_image,
+            "created_at": doc.get("created_at").isoformat() if doc.get("created_at") else None,
+        })
+
+    return {"success": True, "mappings": mappings, "total": len(mappings)}
+
+
+class ReconciliationAction(BaseModel):
+    """突合マッピングの承認/却下/修正リクエスト"""
+    action: str  # "approve" | "reject" | "modify"
+    modified_key: str | None = None  # action="modify" の場合のみ
+
+
+@app.put("/admin/reconciliation/{mapping_id}")
+async def update_reconciliation_mapping(mapping_id: str, request: ReconciliationAction):
+    """突合マッピングを承認/却下/修正する"""
+    try:
+        obj_id = ObjectId(mapping_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="不正なID形式")
+
+    existing = await db.key_mappings.find_one({"_id": obj_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="マッピングが見つかりません")
+
+    update_fields = {"updated_at": datetime.utcnow()}
+
+    if request.action == "approve":
+        update_fields["status"] = "approved"
+    elif request.action == "reject":
+        update_fields["status"] = "rejected"
+    elif request.action == "modify":
+        if not request.modified_key or not request.modified_key.strip():
+            raise HTTPException(status_code=400, detail="修正キーは必須です")
+        update_fields["status"] = "approved"
+        update_fields["canonical_key"] = request.modified_key.strip()
+    else:
+        raise HTTPException(status_code=400, detail=f"不正なアクション: {request.action}")
+
+    await db.key_mappings.update_one({"_id": obj_id}, {"$set": update_fields})
+
+    # マッピングキャッシュを無効化（パイプラインが最新を使うように）
+    invalidate_mapping_cache()
+
+    return {"success": True}
+
+
+@app.post("/admin/reconciliation/apply")
+async def apply_reconciliation(
+    tenant: str = Query(default="default", description="テナントID"),
+):
+    """承認済みマッピングを pages コレクションに適用する"""
+    result = await apply_approved_mappings(db, tenant)
+    return {"success": True, **result}
+
+
+# =============================================================================
 # チャットエンドポイント
 # =============================================================================
 
