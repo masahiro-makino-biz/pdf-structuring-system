@@ -572,6 +572,21 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
     # 4. 未処理ドキュメント（page_number: null）を削除
     await db.pages.delete_one({"file_id": file_id, "tenant": tenant, "page_number": None})
 
+    # 5. 測定値キー突合スキャン（自動実行）
+    # 新しいデータが追加されたことでキー不一致が発生している可能性があるため、
+    # 自動でスキャンを実行する。結果は key_mappings に pending として保存され、
+    # 人間がUIで確認・承認するまでデータは変更されない。
+    if records_processed > 0:
+        try:
+            from services.reconciliation import run_reconciliation_scan
+            scan_result = await run_reconciliation_scan(db, tenant)
+            logger.info(
+                f"自動突合スキャン完了: {scan_result.get('groups_found', 0)}グループ, "
+                f"{scan_result.get('mappings_created', 0)}件の候補検出"
+            )
+        except Exception as e:
+            logger.warning(f"自動突合スキャンでエラー（処理は継続）: {e}")
+
     return {
         "success": True,
         "file_id": file_id,
