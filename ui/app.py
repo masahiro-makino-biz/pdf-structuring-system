@@ -164,470 +164,472 @@ def admin_page():
     # 構造化データ一覧
     # -------------------------------------------------------------------------
     st.divider()
-    st.header("構造化データ一覧")
+    tab_data, tab_dict, tab_reconcile = st.tabs(["構造化データ一覧", "正規化辞書管理", "測定値キー照合"])
 
-    try:
-        response = requests.get(
-            f"{API_URL}/admin/files",
-            params={"tenant": tenant_id},
-            timeout=30,
-        )
+    with tab_data:
 
-        if response.status_code == 200:
-            files = response.json()
-            processed_files = [f for f in files if f.get("processed", False)]
+        try:
+            response = requests.get(
+                f"{API_URL}/admin/files",
+                params={"tenant": tenant_id},
+                timeout=30,
+            )
 
-            if processed_files:
-                for f in processed_files:
-                    with st.expander(f"{f['filename']}", expanded=False):
-                        # 構造化データを取得して表示
-                        try:
-                            struct_response = requests.get(
-                                f"{API_URL}/admin/structured/{f['file_id']}",
-                                params={"tenant": tenant_id},
-                                timeout=30,
-                            )
+            if response.status_code == 200:
+                files = response.json()
+                processed_files = [f for f in files if f.get("processed", False)]
 
-                            if struct_response.status_code == 200:
-                                data = struct_response.json()
-
-                                st.caption(f"処理日時: {data.get('processed_at', 'N/A')} / レコード数: {data.get('total_records', 0)}")
-
-                                records = data.get("records", [])
-                                if records:
-                                    # タブでレコードごとに切り替え表示
-                                    tab_labels = [
-                                        f"P{r.get('page_number', '?')}-{r.get('table_index', '?')}: {(r.get('data', {}).get('測定物理量') or '記録')[:15]}"
-                                        for r in records
-                                    ]
-                                    tabs = st.tabs(tab_labels)
-                                    for tab, record in zip(tabs, records):
-                                        with tab:
-                                            record_data = record.get("data", {})
-                                            st.caption(f"機器: {record_data.get('機器', 'N/A')} / 部品: {record_data.get('機器部品', 'N/A')} / 物理量: {record_data.get('測定物理量', 'N/A')}")
-                                            image_path = record.get("image_path")
-                                            if image_path:
-                                                try:
-                                                    st.image(image_path)
-                                                except Exception:
-                                                    st.warning("画像が見つかりません")
-                                            if "error" in record:
-                                                st.error(record["error"])
-
-                                # JSON表示オプション
-                                if st.checkbox(f"JSON表示", key=f"json_{f['file_id']}"):
-                                    st.json(data)
-
-                                # 削除ボタン
-                                st.divider()
-                                if st.button(
-                                    "このファイルを削除",
-                                    key=f"delete_{f['file_id']}",
-                                    type="secondary"
-                                ):
-                                    try:
-                                        delete_response = requests.delete(
-                                            f"{API_URL}/admin/files/{f['file_id']}",
-                                            params={"tenant": tenant_id},
-                                            timeout=30,
-                                        )
-                                        if delete_response.status_code == 200:
-                                            st.success(f"{f['filename']} を削除しました")
-                                            st.rerun()
-                                        else:
-                                            st.error("削除に失敗しました")
-                                    except requests.exceptions.RequestException as e:
-                                        st.error(f"通信エラー: {e}")
-
-                            else:
-                                st.error("データ取得に失敗しました")
-
-                        except requests.exceptions.RequestException as e:
-                            st.error(f"通信エラー: {e}")
-
-            else:
-                st.info("まだ構造化されたデータはありません。PDFをアップロードしてください。")
-
-        else:
-            st.error(f"データ取得に失敗しました (status: {response.status_code})")
-
-    except requests.exceptions.RequestException as e:
-        st.error(f"API通信エラー: {e}")
-
-    # -------------------------------------------------------------------------
-    # 正規化辞書管理
-    # -------------------------------------------------------------------------
-    # 【このセクションの役割】
-    # normalization_dict を管理画面から直接編集できるようにする。
-    # 辞書は PDF 処理時の表記ゆれ統一（canonical + variants）に使われる。
-    #
-    # 【表示構成】
-    # 1. フィールド選択（点検タイトル/機器/機器部品/測定物理量）
-    # 2. そのフィールドの辞書一覧（expander展開で variant 編集）
-    # 3. 新規canonical登録フォーム
-    st.divider()
-    st.header("正規化辞書管理")
-    st.caption("PDF構造化時に使われる表記ゆれ辞書（canonical + variants）を編集します")
-
-    NORMALIZATION_FIELDS = ["点検タイトル", "機器", "機器部品", "測定物理量"]
-
-    selected_field = st.selectbox(
-        "フィールド選択",
-        options=NORMALIZATION_FIELDS,
-        help="編集する正規化フィールドを選択",
-        key="norm_dict_field",
-    )
-
-    # ---- 一覧取得 ----
-    try:
-        list_resp = requests.get(
-            f"{API_URL}/admin/normalization-dict",
-            params={"field": selected_field},
-            timeout=30,
-        )
-    except requests.exceptions.RequestException as e:
-        st.error(f"辞書取得エラー: {e}")
-        list_resp = None
-
-    if list_resp and list_resp.status_code == 200:
-        entries = list_resp.json().get("entries", [])
-
-        st.caption(f"[{selected_field}] 登録数: {len(entries)}件")
-
-        if not entries:
-            st.info("このフィールドの辞書はまだ空です。下のフォームから追加してください。")
-
-        for entry in entries:
-            entry_id = entry["id"]
-            canonical = entry["canonical"]
-            variants = entry["variants"]
-            variant_badge = f"（variant {len(variants)}件）" if variants else ""
-
-            with st.expander(f"{canonical} {variant_badge}", expanded=False):
-                # -- canonicalリネーム --
-                col_rename, col_btn = st.columns([4, 1])
-                with col_rename:
-                    new_canonical = st.text_input(
-                        "canonical（正規名）",
-                        value=canonical,
-                        key=f"rename_{entry_id}",
-                    )
-                with col_btn:
-                    st.write("")  # ボタン位置調整用の空行
-                    if st.button("リネーム", key=f"rename_btn_{entry_id}"):
-                        if new_canonical.strip() and new_canonical != canonical:
+                if processed_files:
+                    for f in processed_files:
+                        with st.expander(f"{f['filename']}", expanded=False):
+                            # 構造化データを取得して表示
                             try:
-                                rename_resp = requests.put(
-                                    f"{API_URL}/admin/normalization-dict/{entry_id}",
-                                    json={"canonical": new_canonical.strip()},
+                                struct_response = requests.get(
+                                    f"{API_URL}/admin/structured/{f['file_id']}",
+                                    params={"tenant": tenant_id},
                                     timeout=30,
                                 )
-                                if rename_resp.status_code == 200:
-                                    st.success(f"{canonical} → {new_canonical} にリネームしました")
-                                    st.rerun()
+
+                                if struct_response.status_code == 200:
+                                    data = struct_response.json()
+
+                                    st.caption(f"処理日時: {data.get('processed_at', 'N/A')} / レコード数: {data.get('total_records', 0)}")
+
+                                    records = data.get("records", [])
+                                    if records:
+                                        # タブでレコードごとに切り替え表示
+                                        tab_labels = [
+                                            f"P{r.get('page_number', '?')}-{r.get('table_index', '?')}: {(r.get('data', {}).get('測定物理量') or '記録')[:15]}"
+                                            for r in records
+                                        ]
+                                        tabs = st.tabs(tab_labels)
+                                        for tab, record in zip(tabs, records):
+                                            with tab:
+                                                record_data = record.get("data", {})
+                                                st.caption(f"機器: {record_data.get('機器', 'N/A')} / 部品: {record_data.get('機器部品', 'N/A')} / 物理量: {record_data.get('測定物理量', 'N/A')}")
+                                                image_path = record.get("image_path")
+                                                if image_path:
+                                                    try:
+                                                        st.image(image_path)
+                                                    except Exception:
+                                                        st.warning("画像が見つかりません")
+                                                if "error" in record:
+                                                    st.error(record["error"])
+
+                                    # JSON表示オプション
+                                    if st.checkbox(f"JSON表示", key=f"json_{f['file_id']}"):
+                                        st.json(data)
+
+                                    # 削除ボタン
+                                    st.divider()
+                                    if st.button(
+                                        "このファイルを削除",
+                                        key=f"delete_{f['file_id']}",
+                                        type="secondary"
+                                    ):
+                                        try:
+                                            delete_response = requests.delete(
+                                                f"{API_URL}/admin/files/{f['file_id']}",
+                                                params={"tenant": tenant_id},
+                                                timeout=30,
+                                            )
+                                            if delete_response.status_code == 200:
+                                                st.success(f"{f['filename']} を削除しました")
+                                                st.rerun()
+                                            else:
+                                                st.error("削除に失敗しました")
+                                        except requests.exceptions.RequestException as e:
+                                            st.error(f"通信エラー: {e}")
+
                                 else:
-                                    detail = rename_resp.json().get("detail", "不明なエラー")
-                                    st.error(f"リネーム失敗: {detail}")
+                                    st.error("データ取得に失敗しました")
+
                             except requests.exceptions.RequestException as e:
                                 st.error(f"通信エラー: {e}")
 
-                # -- variants 表示と削除 --
-                st.write("**variants（表記ゆれ）**")
-                if variants:
-                    for i, v in enumerate(variants):
-                        col_v, col_del = st.columns([5, 1])
-                        with col_v:
-                            st.code(v, language=None)
-                        with col_del:
-                            if st.button("削除", key=f"del_v_{entry_id}_{i}"):
-                                new_variants = [vv for vv in variants if vv != v]
+                else:
+                    st.info("まだ構造化されたデータはありません。PDFをアップロードしてください。")
+
+            else:
+                st.error(f"データ取得に失敗しました (status: {response.status_code})")
+
+        except requests.exceptions.RequestException as e:
+            st.error(f"API通信エラー: {e}")
+
+        # -------------------------------------------------------------------------
+        # 正規化辞書管理
+        # -------------------------------------------------------------------------
+        # 【このセクションの役割】
+        # normalization_dict を管理画面から直接編集できるようにする。
+        # 辞書は PDF 処理時の表記ゆれ統一（canonical + variants）に使われる。
+        #
+        # 【表示構成】
+        # 1. フィールド選択（点検タイトル/機器/機器部品/測定物理量）
+        # 2. そのフィールドの辞書一覧（expander展開で variant 編集）
+        # 3. 新規canonical登録フォーム
+
+    with tab_dict:
+        st.caption("PDF構造化時に使われる表記ゆれ辞書（canonical + variants）を編集します")
+
+        NORMALIZATION_FIELDS = ["点検タイトル", "機器", "機器部品", "測定物理量"]
+
+        selected_field = st.selectbox(
+            "フィールド選択",
+            options=NORMALIZATION_FIELDS,
+            help="編集する正規化フィールドを選択",
+            key="norm_dict_field",
+        )
+
+        # ---- 一覧取得 ----
+        try:
+            list_resp = requests.get(
+                f"{API_URL}/admin/normalization-dict",
+                params={"field": selected_field},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as e:
+            st.error(f"辞書取得エラー: {e}")
+            list_resp = None
+
+        if list_resp and list_resp.status_code == 200:
+            entries = list_resp.json().get("entries", [])
+
+            st.caption(f"[{selected_field}] 登録数: {len(entries)}件")
+
+            if not entries:
+                st.info("このフィールドの辞書はまだ空です。下のフォームから追加してください。")
+
+            for entry in entries:
+                entry_id = entry["id"]
+                canonical = entry["canonical"]
+                variants = entry["variants"]
+                variant_badge = f"（variant {len(variants)}件）" if variants else ""
+
+                with st.expander(f"{canonical} {variant_badge}", expanded=False):
+                    # -- canonicalリネーム --
+                    col_rename, col_btn = st.columns([4, 1])
+                    with col_rename:
+                        new_canonical = st.text_input(
+                            "canonical（正規名）",
+                            value=canonical,
+                            key=f"rename_{entry_id}",
+                        )
+                    with col_btn:
+                        st.write("")  # ボタン位置調整用の空行
+                        if st.button("リネーム", key=f"rename_btn_{entry_id}"):
+                            if new_canonical.strip() and new_canonical != canonical:
+                                try:
+                                    rename_resp = requests.put(
+                                        f"{API_URL}/admin/normalization-dict/{entry_id}",
+                                        json={"canonical": new_canonical.strip()},
+                                        timeout=30,
+                                    )
+                                    if rename_resp.status_code == 200:
+                                        st.success(f"{canonical} → {new_canonical} にリネームしました")
+                                        st.rerun()
+                                    else:
+                                        detail = rename_resp.json().get("detail", "不明なエラー")
+                                        st.error(f"リネーム失敗: {detail}")
+                                except requests.exceptions.RequestException as e:
+                                    st.error(f"通信エラー: {e}")
+
+                    # -- variants 表示と削除 --
+                    st.write("**variants（表記ゆれ）**")
+                    if variants:
+                        for i, v in enumerate(variants):
+                            col_v, col_del = st.columns([5, 1])
+                            with col_v:
+                                st.code(v, language=None)
+                            with col_del:
+                                if st.button("削除", key=f"del_v_{entry_id}_{i}"):
+                                    new_variants = [vv for vv in variants if vv != v]
+                                    try:
+                                        upd_resp = requests.put(
+                                            f"{API_URL}/admin/normalization-dict/{entry_id}",
+                                            json={"variants": new_variants},
+                                            timeout=30,
+                                        )
+                                        if upd_resp.status_code == 200:
+                                            st.success(f"variant削除: {v}")
+                                            st.rerun()
+                                        else:
+                                            st.error("variant削除に失敗しました")
+                                    except requests.exceptions.RequestException as e:
+                                        st.error(f"通信エラー: {e}")
+                    else:
+                        st.caption("（未登録）")
+
+                    # -- variant 追加 --
+                    col_new, col_add = st.columns([4, 1])
+                    with col_new:
+                        new_variant = st.text_input(
+                            "追加するvariant",
+                            key=f"new_v_{entry_id}",
+                            placeholder="例: No.2微粉炭機D",
+                        )
+                    with col_add:
+                        st.write("")
+                        if st.button("variant追加", key=f"add_v_btn_{entry_id}"):
+                            if new_variant.strip():
+                                merged = variants + [new_variant.strip()]
+                                # 重複除去
+                                merged = list(dict.fromkeys(merged))
                                 try:
                                     upd_resp = requests.put(
                                         f"{API_URL}/admin/normalization-dict/{entry_id}",
-                                        json={"variants": new_variants},
+                                        json={"variants": merged},
                                         timeout=30,
                                     )
                                     if upd_resp.status_code == 200:
-                                        st.success(f"variant削除: {v}")
+                                        st.success(f"variant追加: {new_variant.strip()}")
                                         st.rerun()
                                     else:
-                                        st.error("variant削除に失敗しました")
+                                        st.error("variant追加に失敗しました")
                                 except requests.exceptions.RequestException as e:
                                     st.error(f"通信エラー: {e}")
-                else:
-                    st.caption("（未登録）")
 
-                # -- variant 追加 --
-                col_new, col_add = st.columns([4, 1])
-                with col_new:
-                    new_variant = st.text_input(
-                        "追加するvariant",
-                        key=f"new_v_{entry_id}",
-                        placeholder="例: No.2微粉炭機D",
-                    )
-                with col_add:
-                    st.write("")
-                    if st.button("variant追加", key=f"add_v_btn_{entry_id}"):
-                        if new_variant.strip():
-                            merged = variants + [new_variant.strip()]
-                            # 重複除去
-                            merged = list(dict.fromkeys(merged))
-                            try:
-                                upd_resp = requests.put(
-                                    f"{API_URL}/admin/normalization-dict/{entry_id}",
-                                    json={"variants": merged},
-                                    timeout=30,
-                                )
-                                if upd_resp.status_code == 200:
-                                    st.success(f"variant追加: {new_variant.strip()}")
-                                    st.rerun()
-                                else:
-                                    st.error("variant追加に失敗しました")
-                            except requests.exceptions.RequestException as e:
-                                st.error(f"通信エラー: {e}")
+                    # -- エントリ削除 --
+                    st.divider()
+                    if st.button(
+                        "このエントリを削除",
+                        key=f"del_entry_{entry_id}",
+                        type="secondary",
+                    ):
+                        try:
+                            del_resp = requests.delete(
+                                f"{API_URL}/admin/normalization-dict/{entry_id}",
+                                timeout=30,
+                            )
+                            if del_resp.status_code == 200:
+                                st.success(f"{canonical} を削除しました")
+                                st.rerun()
+                            else:
+                                st.error("削除に失敗しました")
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"通信エラー: {e}")
 
-                # -- エントリ削除 --
-                st.divider()
-                if st.button(
-                    "このエントリを削除",
-                    key=f"del_entry_{entry_id}",
-                    type="secondary",
-                ):
-                    try:
-                        del_resp = requests.delete(
-                            f"{API_URL}/admin/normalization-dict/{entry_id}",
-                            timeout=30,
-                        )
-                        if del_resp.status_code == 200:
-                            st.success(f"{canonical} を削除しました")
-                            st.rerun()
-                        else:
-                            st.error("削除に失敗しました")
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"通信エラー: {e}")
-
-        # ---- 新規canonical登録 ----
-        st.divider()
-        st.subheader("新規canonical登録")
-        with st.form(key=f"new_canonical_form_{selected_field}"):
-            new_canonical_name = st.text_input(
-                "canonical（正規名）",
-                placeholder=f"例: 2号機微粉炭機D（{selected_field}）",
-            )
-            new_variants_text = st.text_input(
-                "variants（カンマ区切りで複数可、省略可）",
-                placeholder="例: No.2微粉炭機D, #2微粉炭機D",
-            )
-            submitted = st.form_submit_button("追加", type="primary")
-            if submitted:
-                if not new_canonical_name.strip():
-                    st.error("canonicalは必須です")
-                else:
-                    variants_list = [
-                        v.strip() for v in new_variants_text.split(",") if v.strip()
-                    ]
-                    try:
-                        create_resp = requests.post(
-                            f"{API_URL}/admin/normalization-dict",
-                            json={
-                                "field": selected_field,
-                                "canonical": new_canonical_name.strip(),
-                                "variants": variants_list,
-                            },
-                            timeout=30,
-                        )
-                        if create_resp.status_code == 200:
-                            st.success(f"登録完了: [{selected_field}] {new_canonical_name}")
-                            st.rerun()
-                        else:
-                            try:
-                                detail = create_resp.json().get("detail", "不明なエラー")
-                            except Exception:
-                                detail = f"サーバーエラー (status: {create_resp.status_code})"
-                            st.error(f"登録失敗: {detail}")
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"通信エラー: {e}")
-    elif list_resp is not None:
-        st.error(f"辞書取得失敗 (status: {list_resp.status_code})")
-
-    # -------------------------------------------------------------------------
-    # 測定値キー照合
-    # -------------------------------------------------------------------------
-    st.divider()
-    st.header("測定値キー照合")
-    st.caption("同じ機器・部品・物理量のレコード間で異なる測定値キーをAIが突合し、人間がレビューします")
-
-    # スキャン実行ボタン
-    if st.button("照合スキャン実行", type="primary", key="reconciliation_scan"):
-        with st.spinner("スキャン中...（AI画像比較を実行しています）"):
-            try:
-                scan_resp = requests.post(
-                    f"{API_URL}/admin/reconciliation/scan",
-                    params={"tenant": tenant_id},
-                    timeout=600,
+            # ---- 新規canonical登録 ----
+            st.divider()
+            st.subheader("新規canonical登録")
+            with st.form(key=f"new_canonical_form_{selected_field}"):
+                new_canonical_name = st.text_input(
+                    "canonical（正規名）",
+                    placeholder=f"例: 2号機微粉炭機D（{selected_field}）",
                 )
-                if scan_resp.status_code == 200:
-                    scan_result = scan_resp.json()
-                    st.success(
-                        f"スキャン完了: {scan_result.get('groups_found', 0)}グループで"
-                        f"{scan_result.get('mappings_created', 0)}件の照合候補を検出"
+                new_variants_text = st.text_input(
+                    "variants（カンマ区切りで複数可、省略可）",
+                    placeholder="例: No.2微粉炭機D, #2微粉炭機D",
+                )
+                submitted = st.form_submit_button("追加", type="primary")
+                if submitted:
+                    if not new_canonical_name.strip():
+                        st.error("canonicalは必須です")
+                    else:
+                        variants_list = [
+                            v.strip() for v in new_variants_text.split(",") if v.strip()
+                        ]
+                        try:
+                            create_resp = requests.post(
+                                f"{API_URL}/admin/normalization-dict",
+                                json={
+                                    "field": selected_field,
+                                    "canonical": new_canonical_name.strip(),
+                                    "variants": variants_list,
+                                },
+                                timeout=30,
+                            )
+                            if create_resp.status_code == 200:
+                                st.success(f"登録完了: [{selected_field}] {new_canonical_name}")
+                                st.rerun()
+                            else:
+                                try:
+                                    detail = create_resp.json().get("detail", "不明なエラー")
+                                except Exception:
+                                    detail = f"サーバーエラー (status: {create_resp.status_code})"
+                                st.error(f"登録失敗: {detail}")
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"通信エラー: {e}")
+        elif list_resp is not None:
+            st.error(f"辞書取得失敗 (status: {list_resp.status_code})")
+
+        # -------------------------------------------------------------------------
+        # 測定値キー照合
+        # -------------------------------------------------------------------------
+
+    with tab_reconcile:
+        st.caption("同じ機器・部品・物理量のレコード間で異なる測定値キーをAIが突合し、人間がレビューします")
+
+        # スキャン実行ボタン
+        if st.button("照合スキャン実行", type="primary", key="reconciliation_scan"):
+            with st.spinner("スキャン中...（AI画像比較を実行しています）"):
+                try:
+                    scan_resp = requests.post(
+                        f"{API_URL}/admin/reconciliation/scan",
+                        params={"tenant": tenant_id},
+                        timeout=600,
                     )
-                    st.rerun()
-                else:
-                    st.error(f"スキャン失敗 (status: {scan_resp.status_code})")
-            except requests.exceptions.RequestException as e:
-                st.error(f"通信エラー: {e}")
+                    if scan_resp.status_code == 200:
+                        scan_result = scan_resp.json()
+                        st.success(
+                            f"スキャン完了: {scan_result.get('groups_found', 0)}グループで"
+                            f"{scan_result.get('mappings_created', 0)}件の照合候補を検出"
+                        )
+                        st.rerun()
+                    else:
+                        st.error(f"スキャン失敗 (status: {scan_resp.status_code})")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"通信エラー: {e}")
 
-    # ステータスフィルタ
-    status_filter = st.selectbox(
-        "ステータス",
-        options=["all", "pending", "approved", "rejected"],
-        format_func=lambda x: {"all": "全て", "pending": "未レビュー", "approved": "承認済み", "rejected": "却下"}[x],
-        key="reconciliation_status",
-    )
-
-    # レポート取得
-    try:
-        report_resp = requests.get(
-            f"{API_URL}/admin/reconciliation/report",
-            params={"status": status_filter},
-            timeout=30,
+        # ステータスフィルタ
+        status_filter = st.selectbox(
+            "ステータス",
+            options=["all", "pending", "approved", "rejected"],
+            format_func=lambda x: {"all": "全て", "pending": "未レビュー", "approved": "承認済み", "rejected": "却下"}[x],
+            key="reconciliation_status",
         )
-    except requests.exceptions.RequestException as e:
-        st.error(f"レポート取得エラー: {e}")
-        report_resp = None
 
-    if report_resp and report_resp.status_code == 200:
-        report = report_resp.json()
-        mappings = report.get("mappings", [])
+        # レポート取得
+        try:
+            report_resp = requests.get(
+                f"{API_URL}/admin/reconciliation/report",
+                params={"status": status_filter},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as e:
+            st.error(f"レポート取得エラー: {e}")
+            report_resp = None
 
-        st.caption(f"照合候補: {len(mappings)}件")
+        if report_resp and report_resp.status_code == 200:
+            report = report_resp.json()
+            mappings = report.get("mappings", [])
 
-        if not mappings:
-            st.info("照合候補がありません。スキャンを実行するか、フィルタを変更してください。")
+            st.caption(f"照合候補: {len(mappings)}件")
 
-        # ページ（variant_page_id）ごとにグルーピング
-        from collections import defaultdict
-        page_groups = defaultdict(list)
-        for m in mappings:
-            page_key = m.get("variant_page_id", m["id"])
-            page_groups[page_key].append(m)
+            if not mappings:
+                st.info("照合候補がありません。スキャンを実行するか、フィルタを変更してください。")
 
-        for page_key, page_mappings in page_groups.items():
-            first = page_mappings[0]
-            group = first.get("group", {})
-            group_label = f"{group.get('機器', '?')} / {group.get('機器部品', '?')} / {group.get('測定物理量', '?')}"
-            key_count = len(page_mappings)
-            statuses = set(m["status"] for m in page_mappings)
-            if statuses == {"approved"}:
-                page_emoji = "✅"
-            elif statuses == {"rejected"}:
-                page_emoji = "❌"
-            elif "pending" in statuses:
-                page_emoji = "⏳"
-            else:
-                page_emoji = "🔀"
+            # ページ（variant_page_id）ごとにグルーピング
+            from collections import defaultdict
+            page_groups = defaultdict(list)
+            for m in mappings:
+                page_key = m.get("variant_page_id", m["id"])
+                page_groups[page_key].append(m)
 
-            with st.expander(
-                f"{page_emoji} {group_label}（{key_count}キー）",
-                expanded=False,
-            ):
-                # 画像とJSON を横並び表示
-                col_img1, col_img2 = st.columns(2)
-                with col_img1:
-                    st.write("**少数派（変更元）**")
-                    if first.get("variant_image_path"):
-                        try:
-                            st.image(first["variant_image_path"], use_container_width=True)
-                        except Exception:
-                            st.warning("画像を表示できません")
-                    if first.get("variant_measurements"):
-                        st.json(first["variant_measurements"])
-                with col_img2:
-                    st.write("**多数派（変更先）**")
-                    if first.get("canonical_image_path"):
-                        try:
-                            st.image(first["canonical_image_path"], use_container_width=True)
-                        except Exception:
-                            st.warning("画像を表示できません")
-                    if first.get("canonical_measurements"):
-                        st.json(first["canonical_measurements"])
+            for page_key, page_mappings in page_groups.items():
+                first = page_mappings[0]
+                group = first.get("group", {})
+                group_label = f"{group.get('機器', '?')} / {group.get('機器部品', '?')} / {group.get('測定物理量', '?')}"
+                key_count = len(page_mappings)
+                statuses = set(m["status"] for m in page_mappings)
+                if statuses == {"approved"}:
+                    page_emoji = "✅"
+                elif statuses == {"rejected"}:
+                    page_emoji = "❌"
+                elif "pending" in statuses:
+                    page_emoji = "⏳"
+                else:
+                    page_emoji = "🔀"
 
-                # キーマッピング一覧
-                st.divider()
-                st.write("**キー対応表**")
-                for m in page_mappings:
-                    m_id = m["id"]
-                    status_emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(m["status"], "")
-                    confidence = m.get("ai_confidence", 0)
+                with st.expander(
+                    f"{page_emoji} {group_label}（{key_count}キー）",
+                    expanded=False,
+                ):
+                    # 画像とJSON を横並び表示
+                    col_img1, col_img2 = st.columns(2)
+                    with col_img1:
+                        st.write("**少数派（変更元）**")
+                        if first.get("variant_image_path"):
+                            try:
+                                st.image(first["variant_image_path"], use_container_width=True)
+                            except Exception:
+                                st.warning("画像を表示できません")
+                        if first.get("variant_measurements"):
+                            st.json(first["variant_measurements"])
+                    with col_img2:
+                        st.write("**多数派（変更先）**")
+                        if first.get("canonical_image_path"):
+                            try:
+                                st.image(first["canonical_image_path"], use_container_width=True)
+                            except Exception:
+                                st.warning("画像を表示できません")
+                        if first.get("canonical_measurements"):
+                            st.json(first["canonical_measurements"])
 
-                    col_map, col_actions = st.columns([3, 3])
-                    with col_map:
-                        st.write(f"{status_emoji} 「{m['variant_key']}」→「{m.get('canonical_key', '?')}」")
+                    # キーマッピング一覧
+                    st.divider()
+                    st.write("**キー対応表**")
+                    for m in page_mappings:
+                        m_id = m["id"]
+                        status_emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(m["status"], "")
+                        confidence = m.get("ai_confidence", 0)
 
-                    with col_actions:
-                        if m["status"] == "pending":
-                            c1, c2, c3 = st.columns(3)
-                            with c1:
-                                if st.button("承認", key=f"approve_{m_id}", type="primary"):
-                                    try:
-                                        requests.put(
-                                            f"{API_URL}/admin/reconciliation/{m_id}",
-                                            json={"action": "approve"},
-                                            timeout=30,
-                                        )
-                                        st.rerun()
-                                    except requests.exceptions.RequestException as e:
-                                        st.error(f"エラー: {e}")
-                            with c2:
-                                if st.button("却下", key=f"reject_{m_id}"):
-                                    try:
-                                        requests.put(
-                                            f"{API_URL}/admin/reconciliation/{m_id}",
-                                            json={"action": "reject"},
-                                            timeout=30,
-                                        )
-                                        st.rerun()
-                                    except requests.exceptions.RequestException as e:
-                                        st.error(f"エラー: {e}")
-                            with c3:
-                                new_key = st.text_input("修正", key=f"mod_{m_id}", label_visibility="collapsed")
-                                if st.button("修正承認", key=f"modify_{m_id}"):
-                                    if new_key.strip():
+                        col_map, col_actions = st.columns([3, 3])
+                        with col_map:
+                            st.write(f"{status_emoji} 「{m['variant_key']}」→「{m.get('canonical_key', '?')}」")
+
+                        with col_actions:
+                            if m["status"] == "pending":
+                                c1, c2, c3 = st.columns(3)
+                                with c1:
+                                    if st.button("承認", key=f"approve_{m_id}", type="primary"):
                                         try:
                                             requests.put(
                                                 f"{API_URL}/admin/reconciliation/{m_id}",
-                                                json={"action": "modify", "modified_key": new_key.strip()},
+                                                json={"action": "approve"},
                                                 timeout=30,
                                             )
                                             st.rerun()
                                         except requests.exceptions.RequestException as e:
                                             st.error(f"エラー: {e}")
+                                with c2:
+                                    if st.button("却下", key=f"reject_{m_id}"):
+                                        try:
+                                            requests.put(
+                                                f"{API_URL}/admin/reconciliation/{m_id}",
+                                                json={"action": "reject"},
+                                                timeout=30,
+                                            )
+                                            st.rerun()
+                                        except requests.exceptions.RequestException as e:
+                                            st.error(f"エラー: {e}")
+                                with c3:
+                                    new_key = st.text_input("修正", key=f"mod_{m_id}", label_visibility="collapsed")
+                                    if st.button("修正承認", key=f"modify_{m_id}"):
+                                        if new_key.strip():
+                                            try:
+                                                requests.put(
+                                                    f"{API_URL}/admin/reconciliation/{m_id}",
+                                                    json={"action": "modify", "modified_key": new_key.strip()},
+                                                    timeout=30,
+                                                )
+                                                st.rerun()
+                                            except requests.exceptions.RequestException as e:
+                                                st.error(f"エラー: {e}")
 
 
-        # 承認済みマッピング一括適用ボタン
-        approved_count = sum(1 for m in mappings if m["status"] == "approved")
-        if approved_count > 0:
-            st.divider()
-            if st.button(f"承認済み {approved_count} 件をDBに適用", type="primary", key="apply_mappings"):
-                with st.spinner("適用中..."):
-                    try:
-                        apply_resp = requests.post(
-                            f"{API_URL}/admin/reconciliation/apply",
-                            params={"tenant": tenant_id},
-                            timeout=120,
-                        )
-                        if apply_resp.status_code == 200:
-                            apply_result = apply_resp.json()
-                            st.success(f"適用完了: {apply_result.get('records_updated', 0)}件のレコードを更新")
-                            st.rerun()
-                        else:
-                            st.error(f"適用失敗 (status: {apply_resp.status_code})")
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"通信エラー: {e}")
+            # 承認済みマッピング一括適用ボタン
+            approved_count = sum(1 for m in mappings if m["status"] == "approved")
+            if approved_count > 0:
+                st.divider()
+                if st.button(f"承認済み {approved_count} 件をDBに適用", type="primary", key="apply_mappings"):
+                    with st.spinner("適用中..."):
+                        try:
+                            apply_resp = requests.post(
+                                f"{API_URL}/admin/reconciliation/apply",
+                                params={"tenant": tenant_id},
+                                timeout=120,
+                            )
+                            if apply_resp.status_code == 200:
+                                apply_result = apply_resp.json()
+                                st.success(f"適用完了: {apply_result.get('records_updated', 0)}件のレコードを更新")
+                                st.rerun()
+                            else:
+                                st.error(f"適用失敗 (status: {apply_resp.status_code})")
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"通信エラー: {e}")
 
-    elif report_resp is not None:
-        st.error(f"レポート取得失敗 (status: {report_resp.status_code})")
+        elif report_resp is not None:
+            st.error(f"レポート取得失敗 (status: {report_resp.status_code})")
 
 
 # =============================================================================
