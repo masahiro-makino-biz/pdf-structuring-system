@@ -606,8 +606,6 @@ def admin_page():
                                         except requests.exceptions.RequestException as e:
                                             st.error(f"エラー: {e}")
 
-                    if m.get("ai_reasoning"):
-                        st.caption(f"AI理由: {m['ai_reasoning'][:100]}")
 
         # 承認済みマッピング一括適用ボタン
         approved_count = sum(1 for m in mappings if m["status"] == "approved")
