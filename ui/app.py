@@ -561,11 +561,9 @@ def admin_page():
                     status_emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(m["status"], "")
                     confidence = m.get("ai_confidence", 0)
 
-                    col_map, col_conf, col_actions = st.columns([3, 1, 3])
+                    col_map, col_actions = st.columns([3, 3])
                     with col_map:
                         st.write(f"{status_emoji} 「{m['variant_key']}」→「{m.get('canonical_key', '?')}」")
-                    with col_conf:
-                        st.write(f"{confidence:.0%}")
 
                     with col_actions:
                         if m["status"] == "pending":
