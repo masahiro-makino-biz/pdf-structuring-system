@@ -515,10 +515,14 @@ async def get_structured_data(
     """
     # pages コレクションから処理済みのレコードを取得
     # page_number が null でないものが処理済み
-    records = await db.pages.find(
+    raw_records = await db.pages.find(
         {"file_id": file_id, "tenant": tenant, "page_number": {"$ne": None}},
-        {"_id": 0}
     ).sort([("page_number", 1), ("table_index", 1)]).to_list(500)
+    # _id を文字列に変換（JSONシリアライズ用）
+    records = []
+    for r in raw_records:
+        r["_id"] = str(r["_id"])
+        records.append(r)
 
     if not records:
         # レコードがない = 未処理またはファイルが存在しない
@@ -541,6 +545,34 @@ async def get_structured_data(
         "total_records": len(records),
         "processed_at": processed_at,
     }
+
+
+class StructuredDataUpdate(BaseModel):
+    """構造化データ更新リクエスト"""
+    data: dict
+
+
+@app.put("/admin/structured/{record_id}")
+async def update_structured_data(record_id: str, request: StructuredDataUpdate):
+    """
+    構造化データを手動で修正する。
+
+    測定値キーの変更、機器名の修正、基準値の訂正などに使用。
+    """
+    try:
+        obj_id = ObjectId(record_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="不正なID形式")
+
+    existing = await db.pages.find_one({"_id": obj_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="レコードが見つかりません")
+
+    await db.pages.update_one(
+        {"_id": obj_id},
+        {"$set": {"data": request.data}}
+    )
+    return {"success": True}
 
 
 @app.delete("/admin/files/{file_id}")

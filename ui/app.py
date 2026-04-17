@@ -206,6 +206,7 @@ def admin_page():
                                         for tab, record in zip(tabs, records):
                                             with tab:
                                                 record_data = record.get("data", {})
+                                                record_id = record.get("_id", "")
                                                 st.caption(f"機器: {record_data.get('機器', 'N/A')} / 部品: {record_data.get('機器部品', 'N/A')} / 物理量: {record_data.get('測定物理量', 'N/A')}")
                                                 image_path = record.get("image_path")
                                                 if image_path:
@@ -216,9 +217,34 @@ def admin_page():
                                                 if "error" in record:
                                                     st.error(record["error"])
 
-                                    # JSON表示オプション
-                                    if st.checkbox(f"JSON表示", key=f"json_{f['file_id']}"):
-                                        st.json(data)
+                                                # 構造化データ編集
+                                                if record_id:
+                                                    import json as _json
+                                                    edit_key = f"edit_{record_id}"
+                                                    if st.checkbox("編集", key=f"chk_{record_id}"):
+                                                        edited_json = st.text_area(
+                                                            "JSON編集",
+                                                            value=_json.dumps(record_data, ensure_ascii=False, indent=2),
+                                                            height=300,
+                                                            key=edit_key,
+                                                        )
+                                                        if st.button("保存", key=f"save_{record_id}", type="primary"):
+                                                            try:
+                                                                parsed = _json.loads(edited_json)
+                                                                save_resp = requests.put(
+                                                                    f"{API_URL}/admin/structured/{record_id}",
+                                                                    json={"data": parsed},
+                                                                    timeout=30,
+                                                                )
+                                                                if save_resp.status_code == 200:
+                                                                    st.success("保存しました")
+                                                                    st.rerun()
+                                                                else:
+                                                                    st.error(f"保存失敗: {save_resp.status_code}")
+                                                            except _json.JSONDecodeError:
+                                                                st.error("JSONの形式が不正です")
+                                                            except requests.exceptions.RequestException as e:
+                                                                st.error(f"通信エラー: {e}")
 
                                     # 削除ボタン
                                     st.divider()
