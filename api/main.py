@@ -788,26 +788,35 @@ async def reconciliation_report(
 
     docs = await db.key_mappings.find(query).sort("created_at", -1).to_list(length=None)
 
-    # ページ情報を取得（画像パス用）
+    # ページ情報を取得（画像パス + 測定値JSON用）
+    # ページIDごとにキャッシュして重複クエリを避ける
+    page_cache = {}
     mappings = []
     for doc in docs:
-        # 画像パスを取得
         canonical_image = None
         variant_image = None
-        if doc.get("canonical_page_id"):
-            page = await db.pages.find_one(
-                {"_id": doc["canonical_page_id"]},
-                {"image_path": 1}
-            )
+        canonical_data = None
+        variant_data = None
+
+        for page_id_field, is_canonical in [("canonical_page_id", True), ("variant_page_id", False)]:
+            pid = doc.get(page_id_field)
+            if not pid:
+                continue
+            pid_str = str(pid)
+            if pid_str not in page_cache:
+                page = await db.pages.find_one(
+                    {"_id": pid},
+                    {"image_path": 1, "data.測定値": 1, "data.基準値": 1}
+                )
+                page_cache[pid_str] = page
+            page = page_cache.get(pid_str)
             if page:
-                canonical_image = page.get("image_path")
-        if doc.get("variant_page_id"):
-            page = await db.pages.find_one(
-                {"_id": doc["variant_page_id"]},
-                {"image_path": 1}
-            )
-            if page:
-                variant_image = page.get("image_path")
+                if is_canonical:
+                    canonical_image = page.get("image_path")
+                    canonical_data = page.get("data", {}).get("測定値")
+                else:
+                    variant_image = page.get("image_path")
+                    variant_data = page.get("data", {}).get("測定値")
 
         mappings.append({
             "id": str(doc["_id"]),
@@ -819,6 +828,9 @@ async def reconciliation_report(
             "status": doc.get("status", "pending"),
             "canonical_image_path": canonical_image,
             "variant_image_path": variant_image,
+            "canonical_measurements": canonical_data,
+            "variant_measurements": variant_data,
+            "variant_page_id": str(doc.get("variant_page_id", "")),
             "created_at": doc.get("created_at").isoformat() if doc.get("created_at") else None,
         })
 

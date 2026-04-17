@@ -506,77 +506,108 @@ def admin_page():
         if not mappings:
             st.info("照合候補がありません。スキャンを実行するか、フィルタを変更してください。")
 
+        # ページ（variant_page_id）ごとにグルーピング
+        from collections import defaultdict
+        page_groups = defaultdict(list)
         for m in mappings:
-            m_id = m["id"]
-            group = m.get("group", {})
+            page_key = m.get("variant_page_id", m["id"])
+            page_groups[page_key].append(m)
+
+        for page_key, page_mappings in page_groups.items():
+            first = page_mappings[0]
+            group = first.get("group", {})
             group_label = f"{group.get('機器', '?')} / {group.get('機器部品', '?')} / {group.get('測定物理量', '?')}"
-            status_emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(m["status"], "")
-            confidence = m.get("ai_confidence", 0)
+            key_count = len(page_mappings)
+            statuses = set(m["status"] for m in page_mappings)
+            if statuses == {"approved"}:
+                page_emoji = "✅"
+            elif statuses == {"rejected"}:
+                page_emoji = "❌"
+            elif "pending" in statuses:
+                page_emoji = "⏳"
+            else:
+                page_emoji = "🔀"
 
             with st.expander(
-                f"{status_emoji} 「{m['variant_key']}」→「{m.get('canonical_key', '?')}」"
-                f"（{group_label}、確信度: {confidence:.0%}）",
+                f"{page_emoji} {group_label}（{key_count}キー）",
                 expanded=False,
             ):
-                # AI判定結果
-                st.write(f"**AI判定理由**: {m.get('ai_reasoning', '不明')}")
-                st.write(f"**確信度**: {confidence:.0%}")
-
-                # 画像表示（横並び）
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**少数派**: 「{m['variant_key']}」")
-                    if m.get("variant_image_path"):
+                # 画像とJSON を横並び表示
+                col_img1, col_img2 = st.columns(2)
+                with col_img1:
+                    st.write("**少数派（変更元）**")
+                    if first.get("variant_image_path"):
                         try:
-                            st.image(m["variant_image_path"], use_container_width=True)
+                            st.image(first["variant_image_path"], use_container_width=True)
                         except Exception:
                             st.warning("画像を表示できません")
-                with col2:
-                    st.write(f"**多数派**: 「{m.get('canonical_key', '?')}」")
-                    if m.get("canonical_image_path"):
+                    if first.get("variant_measurements"):
+                        st.json(first["variant_measurements"])
+                with col_img2:
+                    st.write("**多数派（変更先）**")
+                    if first.get("canonical_image_path"):
                         try:
-                            st.image(m["canonical_image_path"], use_container_width=True)
+                            st.image(first["canonical_image_path"], use_container_width=True)
                         except Exception:
                             st.warning("画像を表示できません")
+                    if first.get("canonical_measurements"):
+                        st.json(first["canonical_measurements"])
 
-                # アクションボタン（pending の場合のみ）
-                if m["status"] == "pending":
-                    col_a, col_r, col_m = st.columns(3)
-                    with col_a:
-                        if st.button("承認", key=f"approve_{m_id}", type="primary"):
-                            try:
-                                requests.put(
-                                    f"{API_URL}/admin/reconciliation/{m_id}",
-                                    json={"action": "approve"},
-                                    timeout=30,
-                                )
-                                st.rerun()
-                            except requests.exceptions.RequestException as e:
-                                st.error(f"通信エラー: {e}")
-                    with col_r:
-                        if st.button("却下", key=f"reject_{m_id}"):
-                            try:
-                                requests.put(
-                                    f"{API_URL}/admin/reconciliation/{m_id}",
-                                    json={"action": "reject"},
-                                    timeout=30,
-                                )
-                                st.rerun()
-                            except requests.exceptions.RequestException as e:
-                                st.error(f"通信エラー: {e}")
-                    with col_m:
-                        new_key = st.text_input("修正キー", key=f"mod_key_{m_id}")
-                        if st.button("修正して承認", key=f"modify_{m_id}"):
-                            if new_key.strip():
-                                try:
-                                    requests.put(
-                                        f"{API_URL}/admin/reconciliation/{m_id}",
-                                        json={"action": "modify", "modified_key": new_key.strip()},
-                                        timeout=30,
-                                    )
-                                    st.rerun()
-                                except requests.exceptions.RequestException as e:
-                                    st.error(f"通信エラー: {e}")
+                # キーマッピング一覧
+                st.divider()
+                st.write("**キー対応表**")
+                for m in page_mappings:
+                    m_id = m["id"]
+                    status_emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(m["status"], "")
+                    confidence = m.get("ai_confidence", 0)
+
+                    col_map, col_conf, col_actions = st.columns([3, 1, 3])
+                    with col_map:
+                        st.write(f"{status_emoji} 「{m['variant_key']}」→「{m.get('canonical_key', '?')}」")
+                    with col_conf:
+                        st.write(f"{confidence:.0%}")
+
+                    with col_actions:
+                        if m["status"] == "pending":
+                            c1, c2, c3 = st.columns(3)
+                            with c1:
+                                if st.button("承認", key=f"approve_{m_id}", type="primary"):
+                                    try:
+                                        requests.put(
+                                            f"{API_URL}/admin/reconciliation/{m_id}",
+                                            json={"action": "approve"},
+                                            timeout=30,
+                                        )
+                                        st.rerun()
+                                    except requests.exceptions.RequestException as e:
+                                        st.error(f"エラー: {e}")
+                            with c2:
+                                if st.button("却下", key=f"reject_{m_id}"):
+                                    try:
+                                        requests.put(
+                                            f"{API_URL}/admin/reconciliation/{m_id}",
+                                            json={"action": "reject"},
+                                            timeout=30,
+                                        )
+                                        st.rerun()
+                                    except requests.exceptions.RequestException as e:
+                                        st.error(f"エラー: {e}")
+                            with c3:
+                                new_key = st.text_input("修正", key=f"mod_{m_id}", label_visibility="collapsed")
+                                if st.button("修正承認", key=f"modify_{m_id}"):
+                                    if new_key.strip():
+                                        try:
+                                            requests.put(
+                                                f"{API_URL}/admin/reconciliation/{m_id}",
+                                                json={"action": "modify", "modified_key": new_key.strip()},
+                                                timeout=30,
+                                            )
+                                            st.rerun()
+                                        except requests.exceptions.RequestException as e:
+                                            st.error(f"エラー: {e}")
+
+                    if m.get("ai_reasoning"):
+                        st.caption(f"AI理由: {m['ai_reasoning'][:100]}")
 
         # 承認済みマッピング一括適用ボタン
         approved_count = sum(1 for m in mappings if m["status"] == "approved")
