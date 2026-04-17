@@ -305,6 +305,9 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
     groups = await detect_inconsistent_groups(db, tenant)
     mappings_created = 0
 
+    # 1グループあたりの少数派キー上限（多すぎる場合は構造化自体が不正）
+    MAX_MINORITY_KEYS_PER_GROUP = 20
+
     for group_info in groups:
         group = group_info["group"]
         majority_keys = group_info["majority_keys"]
@@ -314,12 +317,27 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
         if not majority_image:
             continue
 
-        for minority_sample in group_info["minority_samples"]:
+        minority_samples = group_info["minority_samples"]
+
+        # 少数派キーが多すぎる場合はスキップ（構造化品質の問題）
+        if len(minority_samples) > MAX_MINORITY_KEYS_PER_GROUP:
+            logger.warning(
+                f"少数派キーが{len(minority_samples)}件で上限{MAX_MINORITY_KEYS_PER_GROUP}件超過、スキップ: "
+                f"[{group.get('機器')}]"
+            )
+            continue
+
+        for minority_sample in minority_samples:
             minority_key = minority_sample["key"]
             minority_image = minority_sample.get("image_path")
             minority_page_id = minority_sample.get("page_id")
 
             if not minority_image:
+                continue
+
+            # 明らかに不正なキー（数字だけ、「基準値」を含む等）はスキップ
+            if minority_key.isdigit() or "基準値" in minority_key or "判定" in minority_key:
+                logger.info(f"不正キーをスキップ: [{group.get('機器')}] {minority_key}")
                 continue
 
             # 既に同じマッピングが存在するかチェック
