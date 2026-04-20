@@ -811,11 +811,17 @@ async def reconciliation_scan(
 
 @app.get("/admin/reconciliation/report")
 async def reconciliation_report(
-    status: str = Query(default="all", description="ステータスフィルタ (pending/approved/rejected/all)"),
+    status: str = Query(default="pending_approved", description="ステータスフィルタ"),
 ):
-    """突合レポートを取得"""
+    """突合レポートを取得
+
+    status: pending / approved / rejected / applied / pending_approved / all
+    pending_approved は pending と approved の両方を含む（デフォルト表示）
+    """
     query = {}
-    if status != "all":
+    if status == "pending_approved":
+        query["status"] = {"$in": ["pending", "approved"]}
+    elif status != "all":
         query["status"] = status
 
     docs = await db.key_mappings.find(query).sort("created_at", -1).to_list(length=None)

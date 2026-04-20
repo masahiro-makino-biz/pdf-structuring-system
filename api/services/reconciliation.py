@@ -460,6 +460,13 @@ async def apply_approved_mappings(db, tenant: str = "default") -> dict:
                 )
                 records_updated += 1
 
+        # 適用完了したマッピングのステータスを "applied" に変更
+        # これにより次回のレポートからは除外される（自動適用は継続）
+        await db.key_mappings.update_one(
+            {"_id": mapping["_id"]},
+            {"$set": {"status": "applied", "applied_at": datetime.utcnow()}}
+        )
+
     return {"records_updated": records_updated}
 
 
@@ -472,9 +479,11 @@ _mapping_cache = {"loaded": False, "mappings": []}
 
 
 async def _load_mapping_cache(db):
-    """承認済みマッピングをキャッシュに読み込む"""
+    """承認済み & 適用済みマッピングをキャッシュに読み込む"""
     if not _mapping_cache["loaded"]:
-        approved = await db.key_mappings.find({"status": "approved"}).to_list(length=None)
+        approved = await db.key_mappings.find(
+            {"status": {"$in": ["approved", "applied"]}}
+        ).to_list(length=None)
         _mapping_cache["mappings"] = approved
         _mapping_cache["loaded"] = True
     return _mapping_cache["mappings"]

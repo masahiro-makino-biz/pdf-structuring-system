@@ -506,11 +506,18 @@ def admin_page():
                 except requests.exceptions.RequestException as e:
                     st.error(f"通信エラー: {e}")
 
-        # ステータスフィルタ
+        # ステータスフィルタ（適用済みはデフォルトで除外）
         status_filter = st.selectbox(
             "ステータス",
-            options=["all", "pending", "approved", "rejected"],
-            format_func=lambda x: {"all": "全て", "pending": "未レビュー", "approved": "承認済み", "rejected": "却下"}[x],
+            options=["pending_approved", "pending", "approved", "rejected", "applied", "all"],
+            format_func=lambda x: {
+                "pending_approved": "未レビュー+承認済み（デフォルト）",
+                "pending": "未レビューのみ",
+                "approved": "承認済みのみ",
+                "rejected": "却下",
+                "applied": "適用済み（履歴）",
+                "all": "全て",
+            }[x],
             key="reconciliation_status",
         )
 
