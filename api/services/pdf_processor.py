@@ -464,6 +464,14 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
         result_text = response.choices[0].message.content
         structured_data = json.loads(result_text)
 
+        # 異常応答を検出してログ
+        records = structured_data.get("records")
+        if records is None:
+            logger.warning(f"ページ{page_number} AIがrecords=nullを返却: 応答={result_text[:1000]}")
+        elif isinstance(records, list) and any(r is None for r in records):
+            null_count = sum(1 for r in records if r is None)
+            logger.warning(f"ページ{page_number} AI応答にnull record混入: {null_count}件, 応答={result_text[:1000]}")
+
         return {
             "success": True,
             "page_number": page_number,
