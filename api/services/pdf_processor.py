@@ -540,6 +540,10 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
             # AIが {"records": null} を返す場合もあるため None を空配列扱い
             records = extraction_result["data"].get("records") or []
             for record_idx, record_data in enumerate(records):
+                # AIが null をレコードとして返す場合があるのでスキップ
+                if not isinstance(record_data, dict):
+                    logger.warning(f"ページ{page_num} レコード{record_idx+1}が不正（type={type(record_data).__name__}）、スキップ")
+                    continue
                 try:
                     # 正規化パイプライン適用（表記ゆれの統一）
                     normalized_data = await run_pipeline(record_data, db)
