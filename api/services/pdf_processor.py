@@ -471,9 +471,12 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
         }
 
     except json.JSONDecodeError as e:
+        logger.warning(f"ページ{page_number} JSON解析エラー: {e}")
         return {"success": False, "error": f"JSON解析エラー: {str(e)}"}
     except Exception as e:
-        return {"success": False, "error": f"OpenAI APIエラー: {str(e)}"}
+        import traceback
+        logger.error(f"ページ{page_number} 処理エラー: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        return {"success": False, "error": f"処理エラー: {str(e)}"}
 
 
 async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
@@ -525,15 +528,25 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
         page_num = i + 1
         logger.info(f"ページ処理中: {page_num}/{total_pages}")
 
-        extraction_result = extract_page_data(image_path, page_num)
+        try:
+            extraction_result = extract_page_data(image_path, page_num)
+        except Exception as e:
+            import traceback
+            logger.error(f"ページ{page_num} extract_page_data例外: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            extraction_result = {"success": False, "error": f"例外: {str(e)}"}
 
         if extraction_result["success"]:
             # レコードごとにドキュメントを作成
             # AIが {"records": null} を返す場合もあるため None を空配列扱い
             records = extraction_result["data"].get("records") or []
             for record_idx, record_data in enumerate(records):
-                # 正規化パイプライン適用（表記ゆれの統一）
-                normalized_data = await run_pipeline(record_data, db)
+                try:
+                    # 正規化パイプライン適用（表記ゆれの統一）
+                    normalized_data = await run_pipeline(record_data, db)
+                except Exception as e:
+                    import traceback
+                    logger.error(f"ページ{page_num} 正規化エラー: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+                    normalized_data = record_data  # 正規化失敗時は元データで保存
 
                 record_doc = {
                     # メタデータ
