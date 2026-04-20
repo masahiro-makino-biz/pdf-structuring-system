@@ -554,8 +554,13 @@ async def apply_key_mappings(record_data: dict, db) -> dict:
         マッピング適用済みのデータ（新しいdictを返す）
     """
     result = dict(record_data)
-    measurements = result.get("測定値", {})
-    references = result.get("基準値", {})
+    # AIがnullを返す場合に備えて、dict以外は空dict扱い
+    measurements = result.get("測定値") or {}
+    references = result.get("基準値") or {}
+    if not isinstance(measurements, dict):
+        measurements = {}
+    if not isinstance(references, dict):
+        references = {}
 
     if not measurements:
         return result
