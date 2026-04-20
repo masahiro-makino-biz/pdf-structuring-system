@@ -306,8 +306,12 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
     突合スキャンを実行し、結果を key_mappings コレクションに保存する。
 
     Returns:
-        {"groups_found": int, "mappings_created": int}
+        {"groups_found": int, "mappings_created": int, "stale_deleted": int}
     """
+    # スキャン前に「もう該当レコードが存在しないマッピング」を削除
+    # 手動で構造化データのキーを修正した場合など、variant_keyが実在しなくなったマッピングを掃除
+    stale_deleted = await _cleanup_stale_mappings(db, tenant)
+
     groups = await detect_inconsistent_groups(db, tenant)
     mappings_created = 0
 
@@ -392,7 +396,48 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
     return {
         "groups_found": len(groups),
         "mappings_created": mappings_created,
+        "stale_deleted": stale_deleted,
     }
+
+
+async def _cleanup_stale_mappings(db, tenant: str = "default") -> int:
+    """
+    もう該当レコードが存在しないマッピングを削除する。
+
+    例: 手動で構造化データの variant_key を修正すると、
+    key_mappings には残るが pages に該当キーがなくなる。
+    そういった「用済みマッピング」を掃除する。
+
+    applied ステータスのものは履歴として保持するため対象外。
+    """
+    # pending/approved/rejected のマッピングだけ対象
+    mappings = await db.key_mappings.find(
+        {"status": {"$in": ["pending", "approved", "rejected"]}}
+    ).to_list(length=None)
+
+    deleted = 0
+    for m in mappings:
+        group = m.get("group", {})
+        variant_key = m.get("variant_key")
+        if not variant_key:
+            continue
+
+        # このグループで variant_key を含むレコードが残っているか
+        query = {
+            "tenant": tenant,
+            "data.機器": group.get("機器"),
+            "data.機器部品": group.get("機器部品"),
+            "data.測定物理量": group.get("測定物理量"),
+            f"data.測定値.{variant_key}": {"$exists": True},
+        }
+        exists = await db.pages.find_one(query)
+
+        if not exists:
+            await db.key_mappings.delete_one({"_id": m["_id"]})
+            deleted += 1
+            logger.info(f"古いマッピング削除: [{group.get('機器')}] {variant_key}")
+
+    return deleted
 
 
 # =============================================================================
