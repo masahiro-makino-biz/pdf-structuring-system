@@ -120,42 +120,48 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
         group_id = group["_id"]
         records = group["records"]
 
-        # 個別キーの出現頻度をカウント
-        key_counter = Counter()
-        key_to_records = {}  # key → record（画像パス取得用）
+        if len(records) < 2:
+            continue  # 1レコードしかないグループは比較対象なし
 
+        # キーセット（ソート済みタプル）ごとにレコードをグルーピング
+        keyset_to_records = {}  # tuple(sorted keys) → [record, ...]
         for record in records:
             keys = record.get("keys", [])
-            for key in keys:
-                key_counter[key] += 1
-                if key not in key_to_records:
-                    key_to_records[key] = record
+            if not keys:
+                continue
+            keyset = tuple(sorted(keys))
+            keyset_to_records.setdefault(keyset, []).append(record)
 
-        if not key_counter:
+        # キーセットの種類が1つ以下 → 全員同じキー、照合不要
+        if len(keyset_to_records) < 2:
             continue
 
-        # 多数派キーと少数派キーを分離
-        max_count = max(key_counter.values())
-        majority_keys = [k for k, c in key_counter.items() if c == max_count]
-        minority_keys = [k for k, c in key_counter.items() if c < max_count]
+        # キーセット件数の多い順に並べる。同数の場合は先に登場したものが上
+        sorted_keysets = sorted(
+            keyset_to_records.items(),
+            key=lambda kv: len(kv[1]),
+            reverse=True,
+        )
 
-        if not minority_keys:
-            continue  # 全キーが同じ頻度 → 不一致なし
+        # 最初のキーセットを「多数派候補」として扱う（2件でも検出対象）
+        majority_keyset, majority_records = sorted_keysets[0]
+        majority_keys = list(majority_keyset)
+        majority_record = majority_records[0]
 
-        # 多数派のサンプルレコード（画像参照用）
-        majority_sample_key = majority_keys[0]
-        majority_sample = key_to_records.get(majority_sample_key, {})
-
-        # 少数派のサンプルレコード
+        # 残りのキーセットのキーを少数派として扱う
         minority_samples = []
-        for mk in minority_keys:
-            sample = key_to_records.get(mk, {})
-            minority_samples.append({
-                "key": mk,
-                "page_id": sample.get("page_id"),
-                "image_path": sample.get("image_path"),
-                "measurements": sample.get("measurements", {}),
-            })
+        for keyset, recs in sorted_keysets[1:]:
+            sample_record = recs[0]
+            for mk in keyset:
+                minority_samples.append({
+                    "key": mk,
+                    "page_id": sample_record.get("page_id"),
+                    "image_path": sample_record.get("image_path"),
+                    "measurements": sample_record.get("measurements", {}),
+                })
+
+        if not minority_samples:
+            continue
 
         inconsistent_groups.append({
             "group": {
@@ -164,11 +170,11 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
                 "測定物理量": group_id.get("測定物理量"),
             },
             "majority_keys": majority_keys,
-            "minority_keys": minority_keys,
+            "minority_keys": [s["key"] for s in minority_samples],
             "majority_sample": {
-                "page_id": majority_sample.get("page_id"),
-                "image_path": majority_sample.get("image_path"),
-                "measurements": majority_sample.get("measurements", {}),
+                "page_id": majority_record.get("page_id"),
+                "image_path": majority_record.get("image_path"),
+                "measurements": majority_record.get("measurements", {}),
             },
             "minority_samples": minority_samples,
             "total_records": group["total_records"],
