@@ -454,10 +454,11 @@ def extract_page_data(image_path: str, page_number: int = 1) -> dict:
 
         # response_format は使用しない（Claude/Bedrockで空JSONが返る問題のため）
         # JSON出力はシステムプロンプトで強制する
+        # max_tokens=16000: 複雑な表（測定値多数）で出力が途中で切れないように十分な余裕を持たせる
         response = client.chat.completions.create(
             model=settings.litellm_model,
             messages=messages,
-            max_tokens=4000,
+            max_tokens=16000,
         )
 
         result_text = response.choices[0].message.content
@@ -528,7 +529,8 @@ async def process_pdf(db, file_id: str, tenant: str = "default") -> dict:
 
         if extraction_result["success"]:
             # レコードごとにドキュメントを作成
-            records = extraction_result["data"].get("records", [])
+            # AIが {"records": null} を返す場合もあるため None を空配列扱い
+            records = extraction_result["data"].get("records") or []
             for record_idx, record_data in enumerate(records):
                 # 正規化パイプライン適用（表記ゆれの統一）
                 normalized_data = await run_pipeline(record_data, db)
