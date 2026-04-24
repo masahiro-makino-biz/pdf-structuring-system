@@ -382,13 +382,16 @@ def create_chart_for_location(
         fig.update_traces(marker=dict(color=color))
 
     # 点のスタイル調整（scatter/stripのみ有効）
+    # マーカーを小さめ＋低透明度で重なり見やすく
     if chart_type in ("strip", "scatter"):
-        fig.update_traces(marker=dict(size=8, opacity=0.7))
+        fig.update_traces(marker=dict(size=6, opacity=0.55, line=dict(width=0)))
 
-    # strip のジッター量を小さく抑える（デフォルトだと隣のX刻みにはみ出す）
-    # jitter=0.15 は category width の15%範囲に限定
+    # strip のジッター量調整
+    # - デフォルト（~1.0）は広すぎて隣のX刻みに被る
+    # - 0.15 では同値点が完全に重なって見えない
+    # - 0.35 は category幅の35%でバランス取りつつ見える
     if chart_type == "strip":
-        fig.update_traces(jitter=0.15, pointpos=0)
+        fig.update_traces(jitter=0.35, pointpos=0)
 
     # 基準値超過のデータ点に赤枠をつけて目立たせる
     if ref_min is not None:
