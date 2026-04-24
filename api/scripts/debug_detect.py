@@ -104,10 +104,20 @@ async def main():
 
         if is_target:
             print(f"    majority keys={len(majority_keyset)}, minority計算後={len(minority_samples)}")
+            # キーセット間の集合演算で真の差分を表示
+            all_sets = [set(ks) for ks, _ in sorted_keysets]
+            if len(all_sets) >= 2:
+                s0, s1 = all_sets[0], all_sets[1]
+                intersection = s0 & s1
+                only_in_0 = s0 - s1  # majority側のみ
+                only_in_1 = s1 - s0  # minority側のみ
+                print(f"    共通キー: {len(intersection)}個")
+                print(f"    majorityのみ: {len(only_in_0)}個 先頭={list(only_in_0)[:3]}")
+                print(f"    minorityのみ: {len(only_in_1)}個 先頭={list(only_in_1)[:3]}")
 
         if not minority_samples:
             if is_target:
-                print(f"{mark}SKIP (minority空)")
+                print(f"{mark}SKIP (minority空 = 全部majority側にある)")
             continue
 
         if is_target:
