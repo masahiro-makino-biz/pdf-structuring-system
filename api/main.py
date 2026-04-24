@@ -790,6 +790,7 @@ async def delete_normalization_entry(entry_id: str):
 
 from services.reconciliation import (
     run_reconciliation_scan,
+    run_ai_judgment_for_pending,
     apply_approved_mappings,
     invalidate_mapping_cache,
 )
@@ -798,14 +799,44 @@ from services.reconciliation import (
 @app.post("/admin/reconciliation/scan")
 async def reconciliation_scan(
     tenant: str = Query(default="default", description="テナントID"),
+    run_ai: bool = Query(default=False, description="Trueなら検出と同時にAI判定も走る（遅い）"),
 ):
     """
-    測定値キーの突合スキャンを実行。
+    測定値キーの突合スキャンを実行（検出のみ、デフォルトは高速）。
 
     機器+部品+物理量が同じレコード群でキーが不一致のものを検出し、
-    AIで画像比較して対応付けを生成する。結果は key_mappings に保存される。
+    key_mappings に canonical_key=null の pending として保存する。
+
+    AI判定は別エンドポイント /admin/reconciliation/ai_judge で実行。
+    run_ai=true を渡すと検出と同時にAI判定も走る（従来動作）。
     """
-    result = await run_reconciliation_scan(db, tenant)
+    result = await run_reconciliation_scan(db, tenant, run_ai=run_ai)
+    return {"success": True, **result}
+
+
+@app.post("/admin/reconciliation/ai_judge")
+async def reconciliation_ai_judge(
+    tenant: str = Query(default="default", description="テナントID"),
+    kiki: str | None = Query(default=None, description="機器名でフィルタ"),
+    buhin: str | None = Query(default=None, description="機器部品でフィルタ"),
+    butsuryo: str | None = Query(default=None, description="測定物理量でフィルタ"),
+):
+    """
+    既に検出済みで canonical_key=null の pending マッピングに AI判定を実行。
+
+    検出スキャン(/scan)でまず全グループを記録しておき、
+    AI判定が必要なものだけこのエンドポイントで処理する。
+    フィルタ指定で対象グループを絞れる。
+    """
+    group_filter: dict = {}
+    if kiki:
+        group_filter["機器"] = kiki
+    if buhin:
+        group_filter["機器部品"] = buhin
+    if butsuryo:
+        group_filter["測定物理量"] = butsuryo
+
+    result = await run_ai_judgment_for_pending(db, tenant, group_filter or None)
     return {"success": True, **result}
 
 

@@ -483,28 +483,53 @@ def admin_page():
         # -------------------------------------------------------------------------
 
     with tab_reconcile:
-        st.caption("同じ機器・部品・物理量のレコード間で異なる測定値キーをAIが突合し、人間がレビューします")
+        st.caption("同じ機器・部品・物理量のレコード間で異なる測定値キーを検出し、人間がレビューします。AI判定は別途実行可能。")
 
-        # スキャン実行ボタン
-        if st.button("照合スキャン実行", type="primary", key="reconciliation_scan"):
-            with st.spinner("スキャン中...（AI画像比較を実行しています）"):
-                try:
-                    scan_resp = requests.post(
-                        f"{API_URL}/admin/reconciliation/scan",
-                        params={"tenant": tenant_id},
-                        timeout=600,
-                    )
-                    if scan_resp.status_code == 200:
-                        scan_result = scan_resp.json()
-                        st.success(
-                            f"スキャン完了: {scan_result.get('groups_found', 0)}グループで"
-                            f"{scan_result.get('mappings_created', 0)}件の照合候補を検出"
+        # 検出スキャン（高速） + AI判定（重い）を分離したボタン
+        col_scan1, col_scan2 = st.columns(2)
+
+        with col_scan1:
+            if st.button("① 検出スキャン（高速）", type="primary", key="reconciliation_scan"):
+                with st.spinner("検出中..."):
+                    try:
+                        scan_resp = requests.post(
+                            f"{API_URL}/admin/reconciliation/scan",
+                            params={"tenant": tenant_id, "run_ai": False},
+                            timeout=300,
                         )
-                        st.rerun()
-                    else:
-                        st.error(f"スキャン失敗 (status: {scan_resp.status_code})")
-                except requests.exceptions.RequestException as e:
-                    st.error(f"通信エラー: {e}")
+                        if scan_resp.status_code == 200:
+                            scan_result = scan_resp.json()
+                            st.success(
+                                f"検出完了: {scan_result.get('groups_found', 0)}グループで"
+                                f"{scan_result.get('mappings_created', 0)}件の候補を記録"
+                                f"（AI未判定）"
+                            )
+                            st.rerun()
+                        else:
+                            st.error(f"スキャン失敗 (status: {scan_resp.status_code})")
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"通信エラー: {e}")
+
+        with col_scan2:
+            if st.button("② AI判定実行（未判定のみ）", key="reconciliation_ai_judge"):
+                with st.spinner("AI画像比較を実行中..."):
+                    try:
+                        ai_resp = requests.post(
+                            f"{API_URL}/admin/reconciliation/ai_judge",
+                            params={"tenant": tenant_id},
+                            timeout=1800,
+                        )
+                        if ai_resp.status_code == 200:
+                            ai_result = ai_resp.json()
+                            st.success(
+                                f"AI判定完了: {ai_result.get('judged_records', 0)}レコード / "
+                                f"{ai_result.get('updated_mappings', 0)}件のマッピング更新"
+                            )
+                            st.rerun()
+                        else:
+                            st.error(f"AI判定失敗 (status: {ai_resp.status_code})")
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"通信エラー: {e}")
 
         # ステータスフィルタ（適用済みはデフォルトで除外）
         status_filter = st.selectbox(

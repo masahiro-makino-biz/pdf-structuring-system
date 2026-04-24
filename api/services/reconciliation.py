@@ -347,15 +347,27 @@ async def ai_judge_key_mappings_batch(
 # スキャン実行: 検出 + AI判定 + DB保存
 # =============================================================================
 
-async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
+async def run_reconciliation_scan(db, tenant: str = "default", run_ai: bool = False) -> dict:
     """
     突合スキャンを実行し、結果を key_mappings コレクションに保存する。
+
+    【検出とAI判定の分離】
+    デフォルトは検出のみ（run_ai=False）。同じ機器・機器部品・物理量で
+    キーが不一致なグループを全て key_mappings に記録するが、
+    canonical_key は null（AI判定は走らない）。
+
+    AI判定は別途 run_ai_judgment_for_pending() を呼ぶか、
+    ここに run_ai=True を渡して一括処理する。
+
+    Args:
+        db: MongoDB
+        tenant: テナント
+        run_ai: Trueなら検出と同時にAI判定も実行する
 
     Returns:
         {"groups_found": int, "mappings_created": int, "stale_deleted": int}
     """
     # スキャン前に「もう該当レコードが存在しないマッピング」を削除
-    # 手動で構造化データのキーを修正した場合など、variant_keyが実在しなくなったマッピングを掃除
     stale_deleted = await _cleanup_stale_mappings(db, tenant)
 
     groups = await detect_inconsistent_groups(db, tenant)
@@ -373,14 +385,13 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
 
         minority_samples = group_info["minority_samples"]
 
-        # 少数派を「同じページ（=同じレコード）」ごとにまとめる。
-        # AIに「1ページ分の少数派キー群」をまとめて見せることで行列対応の推定精度を上げる。
+        # 少数派を「同じページ（=同じレコード）」ごとにまとめる
         samples_by_page: dict = {}
         for s in minority_samples:
             samples_by_page.setdefault(s.get("page_id"), []).append(s)
 
         for page_id, samples_in_page in samples_by_page.items():
-            # ページ単位で: 不正キーと既存マッピングを除外したうえで残ったものだけAIに渡す
+            # ページ単位で: 不正キーと既存マッピングを除外
             new_samples = []
             for s in samples_in_page:
                 mk = s["key"]
@@ -398,7 +409,7 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
                     "status": {"$in": ["pending", "approved", "rejected"]},
                 })
                 if existing:
-                    continue  # 既にこのステータスで登録済み
+                    continue
 
                 new_samples.append(s)
 
@@ -413,15 +424,18 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
 
             new_keys = [s["key"] for s in new_samples]
 
-            # AIバッチ判定（画像2枚 + 構造化データ + レコード内の全少数派キー）
-            ai_results = await ai_judge_key_mappings_batch(
-                minority_keys=new_keys,
-                majority_keys=majority_keys,
-                minority_image_path=minority_image,
-                majority_image_path=majority_image,
-                minority_measurements=minority_measurements,
-                majority_measurements=majority_measurements,
-            )
+            # AI判定はオプショナル。run_ai=False の場合は canonical_key=null で保存
+            if run_ai:
+                ai_results = await ai_judge_key_mappings_batch(
+                    minority_keys=new_keys,
+                    majority_keys=majority_keys,
+                    minority_image_path=minority_image,
+                    majority_image_path=majority_image,
+                    minority_measurements=minority_measurements,
+                    majority_measurements=majority_measurements,
+                )
+            else:
+                ai_results = {}
 
             # 結果をDBに保存（キーごとに1レコード）
             now = datetime.utcnow()
@@ -453,7 +467,102 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
         "groups_found": len(groups),
         "mappings_created": mappings_created,
         "stale_deleted": stale_deleted,
+        "ai_judged": run_ai,
     }
+
+
+async def run_ai_judgment_for_pending(
+    db,
+    tenant: str = "default",
+    group_filter: dict | None = None,
+) -> dict:
+    """
+    既に検出済みで canonical_key=null の pending マッピングに対してAI判定を実行する。
+
+    【使い分け】
+    - run_reconciliation_scan(): 検出のみ（AI走らない、高速）
+    - run_ai_judgment_for_pending(): ユーザーが明示的にAI判定を走らせたい時に呼ぶ
+
+    Args:
+        db: MongoDB
+        tenant: テナント
+        group_filter: 特定のグループだけに絞る場合（例: {"機器": "1号機"}）。Noneなら全て
+
+    Returns:
+        {"judged_records": int, "updated_mappings": int}
+    """
+    # canonical_key が null の pending マッピングを対象
+    query: dict = {"status": "pending", "canonical_key": None}
+    if group_filter:
+        for field, val in group_filter.items():
+            query[f"group.{field}"] = val
+
+    pending = await db.key_mappings.find(query).to_list(length=None)
+    if not pending:
+        return {"judged_records": 0, "updated_mappings": 0}
+
+    # variant_page_id ごとにまとめる（同じページの少数派キーは1回のAI呼び出しで判定したい）
+    by_page: dict = {}
+    for m in pending:
+        page_id = m.get("variant_page_id")
+        if not page_id:
+            continue
+        by_page.setdefault(page_id, []).append(m)
+
+    judged_records = 0
+    updated_mappings = 0
+
+    for page_id, mappings_in_page in by_page.items():
+        # このページの variant_image_path を取得（どのマッピングからでも同じ）
+        sample_page = await db.pages.find_one({"_id": page_id})
+        if not sample_page:
+            continue
+        variant_image = sample_page.get("image_path")
+        variant_measurements = sample_page.get("data", {}).get("測定値", {})
+
+        # majority 側の画像も取得（canonical_page_id から）
+        canonical_page_id = mappings_in_page[0].get("canonical_page_id")
+        canonical_page = await db.pages.find_one({"_id": canonical_page_id})
+        if not canonical_page:
+            continue
+        majority_image = canonical_page.get("image_path")
+        majority_measurements = canonical_page.get("data", {}).get("測定値", {})
+        majority_keys = list(majority_measurements.keys())
+
+        if not variant_image or not majority_image:
+            continue
+
+        minority_keys = [m["variant_key"] for m in mappings_in_page]
+
+        # AI判定実行
+        ai_results = await ai_judge_key_mappings_batch(
+            minority_keys=minority_keys,
+            majority_keys=majority_keys,
+            minority_image_path=variant_image,
+            majority_image_path=majority_image,
+            minority_measurements=variant_measurements,
+            majority_measurements=majority_measurements,
+        )
+
+        # マッピングを更新
+        now = datetime.utcnow()
+        for m in mappings_in_page:
+            variant = m["variant_key"]
+            ai_result = ai_results.get(variant, {})
+            await db.key_mappings.update_one(
+                {"_id": m["_id"]},
+                {"$set": {
+                    "canonical_key": ai_result.get("matched_key"),
+                    "ai_confidence": ai_result.get("confidence", 0.0),
+                    "ai_reasoning": ai_result.get("reasoning", ""),
+                    "updated_at": now,
+                }},
+            )
+            updated_mappings += 1
+
+        judged_records += 1
+
+    return {"judged_records": judged_records, "updated_mappings": updated_mappings}
 
 
 async def _cleanup_stale_mappings(db, tenant: str = "default") -> int:
