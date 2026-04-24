@@ -485,8 +485,8 @@ def admin_page():
     with tab_reconcile:
         st.caption("同じ機器・部品・物理量のレコード間で異なる測定値キーを検出し、人間がレビューします。AI判定は別途実行可能。")
 
-        # 検出スキャン（高速） + AI判定（重い）を分離したボタン
-        col_scan1, col_scan2 = st.columns(2)
+        # 検出スキャン（高速） + AI判定（重い） + 全却下 を3列に配置
+        col_scan1, col_scan2, col_scan3 = st.columns(3)
 
         with col_scan1:
             if st.button("① 検出スキャン（高速）", type="primary", key="reconciliation_scan"):
@@ -528,6 +528,30 @@ def admin_page():
                             st.rerun()
                         else:
                             st.error(f"AI判定失敗 (status: {ai_resp.status_code})")
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"通信エラー: {e}")
+
+        with col_scan3:
+            # 確認チェックボックス付きの全却下ボタン（事故防止）
+            confirm_reject = st.checkbox("全却下を実行", key="reconciliation_reject_all_confirm")
+            if st.button(
+                "⚠️ 未レビュー全件却下",
+                key="reconciliation_reject_all",
+                disabled=not confirm_reject,
+            ):
+                with st.spinner("全件却下中..."):
+                    try:
+                        rej_resp = requests.post(
+                            f"{API_URL}/admin/reconciliation/reject_all",
+                            params={"status": "pending"},
+                            timeout=60,
+                        )
+                        if rej_resp.status_code == 200:
+                            rej_result = rej_resp.json()
+                            st.success(f"全却下完了: {rej_result.get('rejected_count', 0)}件")
+                            st.rerun()
+                        else:
+                            st.error(f"却下失敗 (status: {rej_resp.status_code})")
                     except requests.exceptions.RequestException as e:
                         st.error(f"通信エラー: {e}")
 

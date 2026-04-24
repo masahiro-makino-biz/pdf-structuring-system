@@ -946,6 +946,23 @@ async def update_reconciliation_mapping(mapping_id: str, request: Reconciliation
     return {"success": True}
 
 
+@app.post("/admin/reconciliation/reject_all")
+async def reconciliation_reject_all(
+    status: str = Query(default="pending", description="対象ステータス（通常はpending）"),
+):
+    """
+    指定ステータス(デフォルト: pending)のマッピングを全て却下に変更する。
+
+    フィルタなし=全件。大量検出を一括クリアしたい時に使う。
+    """
+    result = await db.key_mappings.update_many(
+        {"status": status},
+        {"$set": {"status": "rejected", "updated_at": datetime.utcnow()}},
+    )
+    invalidate_mapping_cache()
+    return {"success": True, "rejected_count": result.modified_count}
+
+
 @app.post("/admin/reconciliation/apply")
 async def apply_reconciliation(
     tenant: str = Query(default="default", description="テナントID"),
