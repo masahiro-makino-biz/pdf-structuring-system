@@ -949,14 +949,23 @@ async def update_reconciliation_mapping(mapping_id: str, request: Reconciliation
 @app.post("/admin/reconciliation/reject_all")
 async def reconciliation_reject_all(
     status: str = Query(default="pending", description="対象ステータス（通常はpending）"),
+    variant_page_id: str | None = Query(default=None, description="指定があればそのページの却下のみ"),
 ):
     """
-    指定ステータス(デフォルト: pending)のマッピングを全て却下に変更する。
+    指定ステータス(デフォルト: pending)のマッピングを却下に変更する。
 
-    フィルタなし=全件。大量検出を一括クリアしたい時に使う。
+    variant_page_id 指定なし → 全件却下
+    variant_page_id 指定あり → そのページのマッピングだけ却下
     """
+    query: dict = {"status": status}
+    if variant_page_id:
+        try:
+            query["variant_page_id"] = ObjectId(variant_page_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="不正な variant_page_id")
+
     result = await db.key_mappings.update_many(
-        {"status": status},
+        query,
         {"$set": {"status": "rejected", "updated_at": datetime.utcnow()}},
     )
     invalidate_mapping_cache()
