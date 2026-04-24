@@ -355,13 +355,16 @@ def create_chart_for_location(
         }
     # chart_type が未指定（None）の場合、データに応じて自動判定
     # 【なぜこの判定か】
-    # - 線グラフは「同じキーを年度でつなぐ」ので、複数年データが必要
-    # - 1年分しかないデータで線グラフにすると、点が1つだけで意味がない
-    # - 複数年 かつ 測定値キーが5個以下: 線グラフで経年変化を追いやすい
+    # - 線グラフは「同じキーを時系列でつなぐ」ので、複数時点データが必要
+    # - 1時点分しかないデータで線グラフにすると、点が1つだけで意味がない
+    # - 複数時点(年度 or 年月) かつ 測定値キーが5個以下: 線グラフで経時変化を追いやすい
     # - それ以外: 散布図（strip）で全体の分布を見る
+    # 【年月粒度対応】
+    # 同じ年に複数月ある場合も「複数時点」として線グラフ対象にする
     if chart_type is None:
         unique_keys = df["key"].nunique()
-        if unique_keys <= 5 and unique_years >= 2:
+        multiple_time_points = unique_years >= 2 or unique_months >= 2
+        if unique_keys <= 5 and multiple_time_points:
             chart_type = "line"
         else:
             chart_type = "strip"
