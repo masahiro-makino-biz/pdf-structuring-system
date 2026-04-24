@@ -13,8 +13,7 @@ db = db.getSiblingDB("pdf_system");
 // テナント分離用ビュー
 // pages_default: tenant="default" の有効レコードだけを公開するビュー
 // MongoDB MCP Server がこのビューを通じてデータにアクセスすることで、
-// 他テナントのデータが見えないようにする。
-// data.点検タイトル はノイズになりやすいためビュー側で除外し、AIから見えなくする。
+// 他テナントのデータが見えないようにする
 db.createView("pages_default", "pages", [
   {
     $match: {
@@ -22,15 +21,10 @@ db.createView("pages_default", "pages", [
       page_number: { $ne: null },
       error: { $exists: false }
     }
-  },
-  {
-    $project: {
-      "data.点検タイトル": 0
-    }
   }
 ]);
 
-print("Created view: pages_default (excludes data.点検タイトル)");
+print("Created view: pages_default");
 
 // 正規化辞書コレクション用インデックス
 // field（対象フィールド名）+ canonical（正規名）の組み合わせで一意制約
