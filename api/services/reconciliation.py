@@ -8,7 +8,7 @@
 #
 # 【処理フロー】
 # 1. detect_inconsistent_groups(): MongoDB aggregate でキー不一致グループを検出
-# 2. ai_judge_key_mapping(): Vision API で画像比較し、キー対応を判定
+# 2. ai_judge_key_mappings_batch(): Vision API で画像比較し、レコード単位でキー対応を判定
 # 3. apply_key_mappings(): 承認済みマッピングを使って測定値キーを書き換え
 #
 # 【なぜ必要か】
@@ -136,10 +136,10 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
         if len(keyset_to_records) < 2:
             continue
 
-        # キーセット件数の多い順に並べる。同数の場合は先に登場したものが上
+        # キーセット件数の多い順に並べる。同数の場合はキー数が多い方を優先（情報量が多い側を多数派にする）
         sorted_keysets = sorted(
             keyset_to_records.items(),
-            key=lambda kv: len(kv[1]),
+            key=lambda kv: (len(kv[1]), len(kv[0])),
             reverse=True,
         )
 
@@ -147,12 +147,16 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
         majority_keyset, majority_records = sorted_keysets[0]
         majority_keys = list(majority_keyset)
         majority_record = majority_records[0]
+        majority_set = set(majority_keyset)
 
         # 残りのキーセットのキーを少数派として扱う
+        # 多数派と重複するキーは除外（「違いのあるキーだけ」を突合対象にする）
         minority_samples = []
         for keyset, recs in sorted_keysets[1:]:
             sample_record = recs[0]
             for mk in keyset:
+                if mk in majority_set:
+                    continue  # 多数派にも存在するキーは突合不要
                 minority_samples.append({
                     "key": mk,
                     "page_id": sample_record.get("page_id"),
@@ -191,28 +195,35 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
 RECONCILIATION_CONFIDENCE_THRESHOLD = 0.7
 
 
-async def ai_judge_key_mapping(
-    minority_key: str,
+async def ai_judge_key_mappings_batch(
+    minority_keys: list[str],
     majority_keys: list[str],
     minority_image_path: str,
     majority_image_path: str,
     minority_measurements: dict = None,
     majority_measurements: dict = None,
-) -> dict:
+) -> dict[str, dict]:
     """
-    2枚のPDF画像 + 構造化JSONをAIに見せて、少数派キーが多数派キーのどれに対応するか判定する。
+    同一レコード内の複数の少数派キーをまとめてAIに判定させる（バッチ判定）。
+
+    【なぜバッチ化するか】
+    1キーずつ判定するとAIは他のキーとの位置関係を把握できない。
+    レコード内の全少数派キーを一度に見せた方が、表の行列配置から対応関係を推定しやすい。
 
     Args:
-        minority_key: 少数派の測定値キー（例: "A"）
-        majority_keys: 多数派の測定値キーリスト（例: ["タイヤ1", "タイヤ2", "タイヤ3"]）
-        minority_image_path: 少数派キーが含まれるPDFページの画像パス
-        majority_image_path: 多数派キーが含まれるPDFページの画像パス
-        minority_measurements: 少数派レコードの測定値dict（例: {"A": 0.10, "B": 0.13}）
-        majority_measurements: 多数派レコードの測定値dict（例: {"タイヤ1": 0.15, "タイヤ2": 0.18}）
+        minority_keys: 同じレコード内の少数派キーのリスト（例: ["A", "B", "C"]）
+        majority_keys: 多数派キーリスト（例: ["タイヤ1", "タイヤ2", "タイヤ3"]）
+        minority_image_path: 少数派キーを含むページの画像
+        majority_image_path: 多数派キーを含むページの画像
+        minority_measurements: 少数派レコードの測定値dict全体
+        majority_measurements: 多数派レコードの測定値dict全体
 
     Returns:
-        {"matched_key": "タイヤ1", "confidence": 0.92, "reasoning": "..."}
-        or {"matched_key": null, "confidence": 0.0, "reasoning": "判定不能"}
+        {
+            "A": {"matched_key": "タイヤ1", "confidence": 0.92, "reasoning": "..."},
+            "B": {"matched_key": "タイヤ2", "confidence": 0.88, "reasoning": "..."},
+            ...
+        }
     """
     client = _get_openai_client()
 
@@ -230,7 +241,10 @@ async def ai_judge_key_mapping(
         b64_majority = _image_to_base64(img2)
     except Exception as e:
         logger.warning(f"画像読み込みエラー: {e}")
-        return {"matched_key": None, "confidence": 0.0, "reasoning": f"画像読み込みエラー: {e}"}
+        return {
+            k: {"matched_key": None, "confidence": 0.0, "reasoning": f"画像読み込みエラー: {e}"}
+            for k in minority_keys
+        }
 
     # JSON データを判断材料としてプロンプトに含める
     json_context = ""
@@ -241,16 +255,18 @@ async def ai_judge_key_mapping(
 
     prompt = (
         f"2枚の点検記録画像と構造化データを比較して、測定値キーの対応を判定してください。\n\n"
-        f"【画像1】少数派キー「{minority_key}」を含む表\n"
+        f"【画像1】少数派キー {minority_keys} を含む表\n"
         f"【画像2】多数派キー {majority_keys} を含む表\n\n"
         f"{json_context}\n"
-        f"画像1の「{minority_key}」は、画像2の {majority_keys} のどれに対応しますか？\n"
+        f"画像1の各キー（{minority_keys}）が、画像2の {majority_keys} のどれに対応するかを**それぞれ**判定してください。\n"
         f"判断材料:\n"
-        f"- 画像内の表の位置関係、行列の配置\n"
+        f"- 画像内の表の位置関係、行列の配置（同じ行/列の位置なら対応する可能性が高い）\n"
         f"- 構造化データの値の近さ（同じ測定点なら値が近い傾向がある）\n"
-        f"- 表の行番号や並び順\n\n"
-        f"JSON形式で回答:\n"
-        f'{{"matched_key": "対応するキー名 or null", "confidence": 0.0-1.0, "reasoning": "判定理由"}}\n'
+        f"- レコード内の並び順の一貫性（A,B,C と タイヤ1,タイヤ2,タイヤ3 が同じ並びなら順番に対応）\n\n"
+        f"JSON形式で回答（mappings配列に各少数派キーごとの判定を入れる）:\n"
+        f'{{"mappings": ['
+        f'{{"minority_key": "A", "matched_key": "タイヤ1 or null", "confidence": 0.0-1.0, "reasoning": "..."}}, ...'
+        f"]}}\n"
     )
 
     try:
@@ -277,24 +293,52 @@ async def ai_judge_key_mapping(
                 ],
             }],
             response_format={"type": "json_object"},
-            max_tokens=500,
+            max_tokens=1500,
             temperature=0,
         )
-        result = json.loads(response.choices[0].message.content)
+        raw = json.loads(response.choices[0].message.content)
+        mappings_list = raw.get("mappings", []) if isinstance(raw, dict) else []
 
-        # matched_key が majority_keys に存在するか検証
-        matched = result.get("matched_key")
-        if matched and matched not in majority_keys:
-            logger.warning(
-                f"AIが不正なキーを返却: {matched} (候補: {majority_keys})"
-            )
-            return {"matched_key": None, "confidence": 0.0, "reasoning": f"AIが候補外のキーを返却: {matched}"}
+        # minority_key をキーにしたdictに変換 + 候補外キー検証
+        result: dict[str, dict] = {}
+        for item in mappings_list:
+            if not isinstance(item, dict):
+                continue
+            mk = item.get("minority_key")
+            if mk not in minority_keys:
+                continue  # プロンプト外のキーは無視
+            matched = item.get("matched_key")
+            if matched and matched not in majority_keys:
+                logger.warning(f"AIが不正なキーを返却: {matched} (候補: {majority_keys})")
+                result[mk] = {
+                    "matched_key": None,
+                    "confidence": 0.0,
+                    "reasoning": f"AIが候補外のキーを返却: {matched}",
+                }
+            else:
+                result[mk] = {
+                    "matched_key": matched,
+                    "confidence": float(item.get("confidence", 0.0) or 0.0),
+                    "reasoning": item.get("reasoning", ""),
+                }
+
+        # AIが返さなかったキーは「判定不能」として埋める
+        for mk in minority_keys:
+            if mk not in result:
+                result[mk] = {
+                    "matched_key": None,
+                    "confidence": 0.0,
+                    "reasoning": "AIが該当キーを応答しなかった",
+                }
 
         return result
 
     except Exception as e:
         logger.warning(f"AI突合判定エラー: {e}")
-        return {"matched_key": None, "confidence": 0.0, "reasoning": f"AI判定エラー: {e}"}
+        return {
+            k: {"matched_key": None, "confidence": 0.0, "reasoning": f"AI判定エラー: {e}"}
+            for k in minority_keys
+        }
 
 
 # =============================================================================
@@ -323,6 +367,7 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
         majority_keys = group_info["majority_keys"]
         majority_image = group_info["majority_sample"].get("image_path")
         majority_page_id = group_info["majority_sample"].get("page_id")
+        majority_measurements = group_info["majority_sample"].get("measurements")
 
         if not majority_image:
             continue
@@ -337,61 +382,81 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
             )
             continue
 
-        for minority_sample in minority_samples:
-            minority_key = minority_sample["key"]
-            minority_image = minority_sample.get("image_path")
-            minority_page_id = minority_sample.get("page_id")
+        # 少数派を「同じページ（=同じレコード）」ごとにまとめる。
+        # AIに「1ページ分の少数派キー群」をまとめて見せることで行列対応の推定精度を上げる。
+        samples_by_page: dict = {}
+        for s in minority_samples:
+            samples_by_page.setdefault(s.get("page_id"), []).append(s)
 
+        for page_id, samples_in_page in samples_by_page.items():
+            # ページ単位で: 不正キーと既存マッピングを除外したうえで残ったものだけAIに渡す
+            new_samples = []
+            for s in samples_in_page:
+                mk = s["key"]
+                # 明らかに不正なキー（数字だけ、「基準値」「判定」を含む）はスキップ
+                if mk.isdigit() or "基準値" in mk or "判定" in mk:
+                    logger.info(f"不正キーをスキップ: [{group.get('機器')}] {mk}")
+                    continue
+
+                # 既に同じマッピングが存在するかチェック（applied は履歴なので対象外）
+                existing = await db.key_mappings.find_one({
+                    "group.機器": group["機器"],
+                    "group.機器部品": group["機器部品"],
+                    "group.測定物理量": group["測定物理量"],
+                    "variant_key": mk,
+                    "status": {"$in": ["pending", "approved", "rejected"]},
+                })
+                if existing:
+                    continue  # 既にこのステータスで登録済み
+
+                new_samples.append(s)
+
+            if not new_samples:
+                continue
+
+            first = new_samples[0]
+            minority_image = first.get("image_path")
+            minority_measurements = first.get("measurements")
             if not minority_image:
                 continue
 
-            # 明らかに不正なキー（数字だけ、「基準値」を含む等）はスキップ
-            if minority_key.isdigit() or "基準値" in minority_key or "判定" in minority_key:
-                logger.info(f"不正キーをスキップ: [{group.get('機器')}] {minority_key}")
-                continue
+            new_keys = [s["key"] for s in new_samples]
 
-            # 既に同じマッピングが存在するかチェック
-            existing = await db.key_mappings.find_one({
-                "group.機器": group["機器"],
-                "group.機器部品": group["機器部品"],
-                "group.測定物理量": group["測定物理量"],
-                "variant_key": minority_key,
-            })
-            if existing:
-                continue  # 既に登録済み
-
-            # AI判定（画像 + JSON データ）
-            ai_result = await ai_judge_key_mapping(
-                minority_key=minority_key,
+            # AIバッチ判定（画像2枚 + 構造化データ + レコード内の全少数派キー）
+            ai_results = await ai_judge_key_mappings_batch(
+                minority_keys=new_keys,
                 majority_keys=majority_keys,
                 minority_image_path=minority_image,
                 majority_image_path=majority_image,
-                minority_measurements=minority_sample.get("measurements"),
-                majority_measurements=group_info["majority_sample"].get("measurements"),
+                minority_measurements=minority_measurements,
+                majority_measurements=majority_measurements,
             )
 
-            # 結果をDBに保存
+            # 結果をDBに保存（キーごとに1レコード）
             now = datetime.utcnow()
-            mapping_doc = {
-                "group": group,
-                "canonical_key": ai_result.get("matched_key"),
-                "variant_key": minority_key,
-                "ai_confidence": ai_result.get("confidence", 0.0),
-                "ai_reasoning": ai_result.get("reasoning", ""),
-                "canonical_page_id": majority_page_id,
-                "variant_page_id": minority_page_id,
-                "status": "pending",
-                "created_at": now,
-                "updated_at": now,
-            }
-            await db.key_mappings.insert_one(mapping_doc)
-            mappings_created += 1
+            for s in new_samples:
+                mk = s["key"]
+                ai_result = ai_results.get(mk, {})
+                mapping_doc = {
+                    "group": group,
+                    "canonical_key": ai_result.get("matched_key"),
+                    "variant_key": mk,
+                    "ai_confidence": ai_result.get("confidence", 0.0),
+                    "ai_reasoning": ai_result.get("reasoning", ""),
+                    "canonical_page_id": majority_page_id,
+                    "variant_page_id": page_id,
+                    "status": "pending",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await db.key_mappings.insert_one(mapping_doc)
+                mappings_created += 1
 
-            logger.info(
-                f"突合マッピング生成: [{group['機器']}] "
-                f"{minority_key} → {ai_result.get('matched_key')} "
-                f"(confidence: {ai_result.get('confidence', 0)})"
-            )
+                logger.info(
+                    f"突合マッピング生成: [{group['機器']}] "
+                    f"{mk} → {ai_result.get('matched_key')} "
+                    f"(confidence: {ai_result.get('confidence', 0)})"
+                )
 
     return {
         "groups_found": len(groups),
