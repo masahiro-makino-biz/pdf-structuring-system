@@ -195,7 +195,7 @@ find(database="pdf_system", collection="pages_default",
 | min_value | この値以上のデータだけ表示 | 0.5 |
 | max_value | この値以下のデータだけ表示 | 1.0 |
 | show_reference | 基準値線の表示/非表示 | false |
-| x_axis | X軸（"year" or "key"）。未指定なら自動判定 | "year" |
+| x_axis | X軸（"year" / "year_month" / "key"）。未指定なら自動判定（同一年に複数月あれば year_month、単月なら year、単年なら key） | "year_month" |
 | key_filter | 測定値キー名で絞る（部分一致、カンマ区切りで複数可） | "タイヤ・上・①" |
 | above_reference | 基準値を超えているデータだけ表示 | true |
 

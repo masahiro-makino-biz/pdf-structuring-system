@@ -98,6 +98,38 @@ def extract_year_from_date(date_str: str) -> int | None:
         return None
 
 
+def extract_year_month_from_date(date_str: str) -> str | None:
+    """日付文字列から年-月を抽出（"2022-12" 形式）
+
+    想定入力: "2022-12-12", "2022/12/12", "2022-12", "20221212"
+    """
+    if not date_str:
+        return None
+    try:
+        # "2022-12-12" や "2022-12" 形式
+        if "-" in date_str:
+            parts = date_str.split("-")
+            if len(parts) >= 2:
+                year = int(parts[0])
+                month = int(parts[1])
+                return f"{year:04d}-{month:02d}"
+        # "2022/12/12" 形式
+        elif "/" in date_str:
+            parts = date_str.split("/")
+            if len(parts) >= 2:
+                year = int(parts[0])
+                month = int(parts[1])
+                return f"{year:04d}-{month:02d}"
+        # "20221212" 形式
+        elif len(date_str) >= 6 and date_str[:6].isdigit():
+            year = int(date_str[:4])
+            month = int(date_str[4:6])
+            return f"{year:04d}-{month:02d}"
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
 def extract_reference_values(references: dict) -> dict[str, float]:
     """基準値をすべて抽出（キー名→数値の辞書）"""
     result = {}
@@ -139,7 +171,9 @@ def group_by_measurement_location(results: list) -> dict:
         for record in matched_records:
             data = record.get("data", {})
 
-            year = extract_year_from_date(data.get("点検年月日", ""))
+            date_str = data.get("点検年月日", "")
+            year = extract_year_from_date(date_str)
+            year_month = extract_year_month_from_date(date_str)
             if year is None:
                 continue
 
@@ -180,6 +214,7 @@ def group_by_measurement_location(results: list) -> dict:
 
                 location_groups[group_key]["data_points"].append({
                     "year": year,
+                    "year_month": year_month or f"{year:04d}-01",  # フォールバックで1月扱い
                     "key": key,
                     "value": value
                 })
@@ -256,17 +291,35 @@ def create_chart_for_location(
 
     # 年を文字列に変換（カテゴリ＝離散値として扱うため）
     df["year"] = df["year"].astype(str)
-    df = df.sort_values("year")
+
+    # year_month がない古いデータ用にフォールバック
+    if "year_month" not in df.columns:
+        df["year_month"] = df["year"].astype(str) + "-01"
+
+    # 並び替えは year_month で（時系列順）
+    df = df.sort_values("year_month")
 
     # X軸の決定: 指定があればそれを優先、なければ自動判定
     unique_years = df["year"].nunique()
+    unique_months = df["year_month"].nunique()
+
     if x_axis is not None:
+        # user指定: "year" / "year_month" / "key"
         x_col = x_axis
-        x_label = "年度" if x_axis == "year" else "測定値キー"
-    elif unique_years <= 1:
+        x_label = {
+            "year": "年度",
+            "year_month": "年月",
+            "key": "測定値キー",
+        }.get(x_axis, x_axis)
+    elif unique_months <= 1:
         x_col = "key"
         x_label = "測定値キー"
+    elif unique_months > unique_years:
+        # 同じ年に複数月ある → 年月粒度で表示したほうが綺麗
+        x_col = "year_month"
+        x_label = "年月"
     else:
+        # 1年に1点しかない → 年度で十分
         x_col = "year"
         x_label = "年度"
 
@@ -291,8 +344,8 @@ def create_chart_for_location(
         data_frame=df,
         x=x_col,
         y="value",
-        hover_data={"key": True, "year": True, "value": ":.4f"},
-        labels={"year": "年度", "value": "測定値", "key": "測定値キー"},
+        hover_data={"key": True, "year_month": True, "value": ":.4f"},
+        labels={"year": "年度", "year_month": "年月", "value": "測定値", "key": "測定値キー"},
     )
     if use_color_key:
         chart_common["color"] = "key"
@@ -363,10 +416,10 @@ def create_chart_for_location(
     title_parts = [p for p in [equipment, equipment_part, measurement_type] if p]
     chart_title = " / ".join(title_parts) if title_parts else location
 
-    # X軸が測定値キー（key）の場合はラベルが長いので斜め表示
+    # X軸が測定値キー（key）または年月（year_month）の場合はラベルが長いので斜め表示
     # 年度（year）の場合は短いので斜めにしない
     xaxis_config = dict(showgrid=False)
-    if x_col == "key":
+    if x_col in ("key", "year_month"):
         xaxis_config["tickangle"] = -45
 
     fig.update_layout(
