@@ -367,7 +367,8 @@ def create_chart_for_location(
             chart_type = "strip"
 
     chart_builders = {
-        "strip": lambda: px.strip(**chart_common),
+        # stripmode="overlay": 複数キーを同じX位置に重ねる（横にはみ出さない）
+        "strip": lambda: px.strip(**chart_common, stripmode="overlay"),
         "scatter": lambda: px.scatter(**chart_common),
         "bar": lambda: px.bar(**chart_common, barmode="group"),
         "line": lambda: px.line(**chart_common, markers=True),
@@ -383,6 +384,11 @@ def create_chart_for_location(
     # 点のスタイル調整（scatter/stripのみ有効）
     if chart_type in ("strip", "scatter"):
         fig.update_traces(marker=dict(size=8, opacity=0.7))
+
+    # strip のジッター量を小さく抑える（デフォルトだと隣のX刻みにはみ出す）
+    # jitter=0.15 は category width の15%範囲に限定
+    if chart_type == "strip":
+        fig.update_traces(jitter=0.15, pointpos=0)
 
     # 基準値超過のデータ点に赤枠をつけて目立たせる
     if ref_min is not None:
