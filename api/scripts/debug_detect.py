@@ -11,14 +11,8 @@ async def main():
     client = AsyncIOMotorClient("mongodb://mongo:27017")
     db = client.pdf_system
 
-    # まず detect_inconsistent_groups の結果を全表示
-    groups = await detect_inconsistent_groups(db, "default")
-    print(f"=== detect_inconsistent_groups: {len(groups)} groups ===")
-    for i, g in enumerate(groups):
-        print(f"[{i}] {g['group']} / minority={len(g['minority_samples'])}")
-
-    # 次にaggregateを直接叩いて、何が集計されているか見る
-    print("\n=== raw aggregate (total_records > 1) ===")
+    # detect_inconsistent_groups の内部を手動でトレース
+    print("=== detect_inconsistent_groups トレース ===")
     pipeline = [
         {"$match": {
             "tenant": "default",
@@ -41,20 +35,83 @@ async def main():
                 "機器部品": "$data.機器部品",
                 "測定物理量": "$data.測定物理量",
             },
-            "records": {"$sum": 1},
-            "keysets": {"$addToSet": "$measurement_keys"},
+            "records": {
+                "$push": {
+                    "keys": "$measurement_keys",
+                    "page_id": "$_id",
+                    "image_path": "$image_path",
+                    "measurements": "$data.測定値",
+                }
+            },
+            "total_records": {"$sum": 1},
         }},
-        {"$match": {"records": {"$gt": 1}}},
+        {"$match": {"total_records": {"$gt": 1}}},
     ]
-    async for g in db.pages.aggregate(pipeline):
-        kiki = g["_id"].get("機器")
-        buhin = g["_id"].get("機器部品")
-        butsuryo = g["_id"].get("測定物理量")
-        print(f"  {kiki!r} / {buhin!r} / {butsuryo!r}: records={g['records']}, keysets={len(g['keysets'])}")
-        if buhin and "ライナ" in buhin:
-            print(f"    キーセット内訳:")
-            for i, ks in enumerate(g["keysets"]):
-                print(f"      [{i}] {len(ks)}個: 先頭={ks[:2]}")
+
+    cursor = db.pages.aggregate(pipeline)
+    agg_groups = await cursor.to_list(length=None)
+    print(f"aggregateから {len(agg_groups)} グループ")
+
+    for g in agg_groups:
+        group_id = g["_id"]
+        buhin = group_id.get("機器部品") or ""
+        is_target = "ライナ" in buhin
+
+        records = g["records"]
+        mark = ">>> " if is_target else "    "
+
+        if len(records) < 2:
+            if is_target:
+                print(f"{mark}{group_id}: SKIP (records<2)")
+            continue
+
+        keyset_to_records = {}
+        empty_keys = 0
+        for r in records:
+            keys = r.get("keys", [])
+            if not keys:
+                empty_keys += 1
+                continue
+            keyset = tuple(sorted(keys))
+            keyset_to_records.setdefault(keyset, []).append(r)
+
+        if is_target:
+            print(f"{mark}{group_id}")
+            print(f"    records={len(records)}, empty_keys={empty_keys}")
+            print(f"    keyset_to_records: {len(keyset_to_records)}種類")
+            for ks, rs in keyset_to_records.items():
+                print(f"      keyset({len(ks)}個): {len(rs)}レコード 先頭2={ks[:2]}")
+
+        if len(keyset_to_records) < 2:
+            if is_target:
+                print(f"{mark}SKIP (keyset数<2)")
+            continue
+
+        sorted_keysets = sorted(
+            keyset_to_records.items(),
+            key=lambda kv: (len(kv[1]), len(kv[0])),
+            reverse=True,
+        )
+        majority_keyset = sorted_keysets[0][0]
+        majority_set = set(majority_keyset)
+
+        minority_samples = []
+        for keyset, recs in sorted_keysets[1:]:
+            for mk in keyset:
+                if mk in majority_set:
+                    continue
+                minority_samples.append(mk)
+
+        if is_target:
+            print(f"    majority keys={len(majority_keyset)}, minority計算後={len(minority_samples)}")
+
+        if not minority_samples:
+            if is_target:
+                print(f"{mark}SKIP (minority空)")
+            continue
+
+        if is_target:
+            print(f"{mark}✓ 検出対象: minority={len(minority_samples)}個")
 
 
 if __name__ == "__main__":
