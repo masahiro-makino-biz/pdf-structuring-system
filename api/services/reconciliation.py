@@ -293,7 +293,7 @@ async def ai_judge_key_mappings_batch(
                 ],
             }],
             response_format={"type": "json_object"},
-            max_tokens=1500,
+            max_tokens=4000,
             temperature=0,
         )
         raw = json.loads(response.choices[0].message.content)
@@ -359,9 +359,6 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
     groups = await detect_inconsistent_groups(db, tenant)
     mappings_created = 0
 
-    # 1グループあたりの少数派キー上限（多すぎる場合は構造化自体が不正）
-    MAX_MINORITY_KEYS_PER_GROUP = 20
-
     for group_info in groups:
         group = group_info["group"]
         majority_keys = group_info["majority_keys"]
@@ -373,14 +370,6 @@ async def run_reconciliation_scan(db, tenant: str = "default") -> dict:
             continue
 
         minority_samples = group_info["minority_samples"]
-
-        # 少数派キーが多すぎる場合はスキップ（構造化品質の問題）
-        if len(minority_samples) > MAX_MINORITY_KEYS_PER_GROUP:
-            logger.warning(
-                f"少数派キーが{len(minority_samples)}件で上限{MAX_MINORITY_KEYS_PER_GROUP}件超過、スキップ: "
-                f"[{group.get('機器')}]"
-            )
-            continue
 
         # 少数派を「同じページ（=同じレコード）」ごとにまとめる。
         # AIに「1ページ分の少数派キー群」をまとめて見せることで行列対応の推定精度を上げる。
