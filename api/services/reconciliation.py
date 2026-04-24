@@ -195,6 +195,11 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
 RECONCILIATION_CONFIDENCE_THRESHOLD = 0.7
 
 
+# AIバッチ判定1回あたりの最大キー数（応答トークン超過を避けるため）
+# 少数派キー数がこれを超えると自動的にチャンク分割して複数回呼び出す
+_AI_BATCH_CHUNK_SIZE = 20
+
+
 async def ai_judge_key_mappings_batch(
     minority_keys: list[str],
     majority_keys: list[str],
@@ -209,6 +214,10 @@ async def ai_judge_key_mappings_batch(
     【なぜバッチ化するか】
     1キーずつ判定するとAIは他のキーとの位置関係を把握できない。
     レコード内の全少数派キーを一度に見せた方が、表の行列配置から対応関係を推定しやすい。
+
+    【チャンク化】
+    少数派キーが多すぎる場合（_AI_BATCH_CHUNK_SIZE超）は自動的に分割して複数回呼び出す。
+    応答トークン超過によるJSON切断を防ぐため。
 
     Args:
         minority_keys: 同じレコード内の少数派キーのリスト（例: ["A", "B", "C"]）
@@ -225,6 +234,46 @@ async def ai_judge_key_mappings_batch(
             ...
         }
     """
+    # チャンク分割: キー数が多い場合は複数回呼び出して結果をマージ
+    if len(minority_keys) > _AI_BATCH_CHUNK_SIZE:
+        merged: dict[str, dict] = {}
+        for i in range(0, len(minority_keys), _AI_BATCH_CHUNK_SIZE):
+            chunk = minority_keys[i:i + _AI_BATCH_CHUNK_SIZE]
+            logger.info(
+                f"AIバッチ判定: チャンク {i // _AI_BATCH_CHUNK_SIZE + 1}"
+                f"/{(len(minority_keys) + _AI_BATCH_CHUNK_SIZE - 1) // _AI_BATCH_CHUNK_SIZE} "
+                f"({len(chunk)}キー)"
+            )
+            partial = await _ai_judge_keys_single_call(
+                chunk,
+                majority_keys,
+                minority_image_path,
+                majority_image_path,
+                minority_measurements,
+                majority_measurements,
+            )
+            merged.update(partial)
+        return merged
+
+    return await _ai_judge_keys_single_call(
+        minority_keys,
+        majority_keys,
+        minority_image_path,
+        majority_image_path,
+        minority_measurements,
+        majority_measurements,
+    )
+
+
+async def _ai_judge_keys_single_call(
+    minority_keys: list[str],
+    majority_keys: list[str],
+    minority_image_path: str,
+    majority_image_path: str,
+    minority_measurements: dict = None,
+    majority_measurements: dict = None,
+) -> dict[str, dict]:
+    """1回のAI呼び出しで判定する内部関数（チャンク内の処理）"""
     client = _get_openai_client()
 
     # 画像を読み込んでBase64変換
