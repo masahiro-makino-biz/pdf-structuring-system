@@ -195,11 +195,6 @@ async def detect_inconsistent_groups(db, tenant: str = "default") -> list[dict]:
 RECONCILIATION_CONFIDENCE_THRESHOLD = 0.7
 
 
-# AIバッチ判定1回あたりの最大キー数（応答トークン超過を避けるため）
-# 少数派キー数がこれを超えると自動的にチャンク分割して複数回呼び出す
-_AI_BATCH_CHUNK_SIZE = 20
-
-
 async def ai_judge_key_mappings_batch(
     minority_keys: list[str],
     majority_keys: list[str],
@@ -209,19 +204,15 @@ async def ai_judge_key_mappings_batch(
     majority_measurements: dict = None,
 ) -> dict[str, dict]:
     """
-    同一レコード内の複数の少数派キーをまとめてAIに判定させる（バッチ判定）。
+    同一レコード内の複数の少数派キーをまとめてAIに判定させる（バッチ判定・1発呼び出し）。
 
     【なぜバッチ化するか】
     1キーずつ判定するとAIは他のキーとの位置関係を把握できない。
     レコード内の全少数派キーを一度に見せた方が、表の行列配置から対応関係を推定しやすい。
 
-    【チャンク化】
-    少数派キーが多すぎる場合（_AI_BATCH_CHUNK_SIZE超）は自動的に分割して複数回呼び出す。
-    応答トークン超過によるJSON切断を防ぐため。
-
     Args:
-        minority_keys: 同じレコード内の少数派キーのリスト（例: ["A", "B", "C"]）
-        majority_keys: 多数派キーリスト（例: ["タイヤ1", "タイヤ2", "タイヤ3"]）
+        minority_keys: 同じレコード内の少数派キーのリスト
+        majority_keys: 多数派キーリスト
         minority_image_path: 少数派キーを含むページの画像
         majority_image_path: 多数派キーを含むページの画像
         minority_measurements: 少数派レコードの測定値dict全体
@@ -230,50 +221,9 @@ async def ai_judge_key_mappings_batch(
     Returns:
         {
             "A": {"matched_key": "タイヤ1", "confidence": 0.92, "reasoning": "..."},
-            "B": {"matched_key": "タイヤ2", "confidence": 0.88, "reasoning": "..."},
             ...
         }
     """
-    # チャンク分割: キー数が多い場合は複数回呼び出して結果をマージ
-    if len(minority_keys) > _AI_BATCH_CHUNK_SIZE:
-        merged: dict[str, dict] = {}
-        for i in range(0, len(minority_keys), _AI_BATCH_CHUNK_SIZE):
-            chunk = minority_keys[i:i + _AI_BATCH_CHUNK_SIZE]
-            logger.info(
-                f"AIバッチ判定: チャンク {i // _AI_BATCH_CHUNK_SIZE + 1}"
-                f"/{(len(minority_keys) + _AI_BATCH_CHUNK_SIZE - 1) // _AI_BATCH_CHUNK_SIZE} "
-                f"({len(chunk)}キー)"
-            )
-            partial = await _ai_judge_keys_single_call(
-                chunk,
-                majority_keys,
-                minority_image_path,
-                majority_image_path,
-                minority_measurements,
-                majority_measurements,
-            )
-            merged.update(partial)
-        return merged
-
-    return await _ai_judge_keys_single_call(
-        minority_keys,
-        majority_keys,
-        minority_image_path,
-        majority_image_path,
-        minority_measurements,
-        majority_measurements,
-    )
-
-
-async def _ai_judge_keys_single_call(
-    minority_keys: list[str],
-    majority_keys: list[str],
-    minority_image_path: str,
-    majority_image_path: str,
-    minority_measurements: dict = None,
-    majority_measurements: dict = None,
-) -> dict[str, dict]:
-    """1回のAI呼び出しで判定する内部関数（チャンク内の処理）"""
     client = _get_openai_client()
 
     # 画像を読み込んでBase64変換
@@ -307,14 +257,17 @@ async def _ai_judge_keys_single_call(
         f"【画像1】少数派キー {minority_keys} を含む表\n"
         f"【画像2】多数派キー {majority_keys} を含む表\n\n"
         f"{json_context}\n"
-        f"画像1の各キー（{minority_keys}）が、画像2の {majority_keys} のどれに対応するかを**それぞれ**判定してください。\n"
+        f"画像1の各キー（{len(minority_keys)}個: {minority_keys}）が、"
+        f"画像2の {majority_keys} のどれに対応するかを**それぞれ**判定してください。\n"
         f"判断材料:\n"
         f"- 画像内の表の位置関係、行列の配置（同じ行/列の位置なら対応する可能性が高い）\n"
         f"- 構造化データの値の近さ（同じ測定点なら値が近い傾向がある）\n"
-        f"- レコード内の並び順の一貫性（A,B,C と タイヤ1,タイヤ2,タイヤ3 が同じ並びなら順番に対応）\n\n"
+        f"- レコード内の並び順の一貫性（A,B,C と タイヤ1,タイヤ2,タイヤ3 が同じ並びなら順番に対応）\n"
+        f"- キー名に含まれる番号（例: ①・計測値・1 と ①・初期値・1 は同じ番号→対応する可能性が高い）\n\n"
+        f"重要: reasoning は短く（20文字以内）。全ての少数派キーを漏れなく返答すること。\n\n"
         f"JSON形式で回答（mappings配列に各少数派キーごとの判定を入れる）:\n"
         f'{{"mappings": ['
-        f'{{"minority_key": "A", "matched_key": "タイヤ1 or null", "confidence": 0.0-1.0, "reasoning": "..."}}, ...'
+        f'{{"minority_key":"A","matched_key":"タイヤ1 or null","confidence":0.0-1.0,"reasoning":"短い理由"}}, ...'
         f"]}}\n"
     )
 
@@ -342,7 +295,7 @@ async def _ai_judge_keys_single_call(
                 ],
             }],
             response_format={"type": "json_object"},
-            max_tokens=4000,
+            max_tokens=16000,
             temperature=0,
         )
         raw = json.loads(response.choices[0].message.content)
