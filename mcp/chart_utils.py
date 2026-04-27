@@ -452,8 +452,8 @@ def create_chart_for_location(
             xanchor="left",
             x=1.02,
         ),
-        width=900,
-        height=500,
+        width=700,
+        height=440,
         margin=dict(l=60, r=160, t=60, b=100 if x_col == "key" else 50),
     )
 
@@ -948,8 +948,8 @@ def _create_single_prediction_chart(
             xanchor="left",
             x=1.02,
         ),
-        width=900,
-        height=500,
+        width=700,
+        height=440,
         margin=dict(l=60, r=160, t=60, b=50),
     )
 
