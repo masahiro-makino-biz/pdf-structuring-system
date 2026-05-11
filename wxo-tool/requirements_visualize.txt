@@ -1,0 +1,6 @@
+# visualize_chart_tool.py の依存パッケージ
+# orchestrate tools import 時に -r で渡す
+
+ibm-watsonx-orchestrate>=1.0.0
+plotly>=5.0.0
+pandas>=2.0.0

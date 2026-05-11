@@ -121,30 +121,71 @@
 
     /**
      * 文字列から Plotly HTML ブロックを抽出する。
+     * - visualize_chart ツールの JSON 出力 ({charts:[{chart_html:"..."}]})
      * - <!DOCTYPE html>... 形式
      * - <html>...</html> 形式（DOCTYPE なし ← MCPサーバーの出力形式）
      * - コードブロック内の HTML
-     * - エスケープされた \\n を含む文字列
      */
     function extractHtml(text) {
       if (!text) return null;
+      console.log('[extractHtml] input head:', text.slice(0, 80));
 
-      // エスケープされた改行を実際の改行に変換（MCPが \\n で返す場合）
-      const unescaped = text.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
+      // 【ケースA】テキスト全体が visualize_chart の JSON 結果なら、JSON.parse で
+      // すべてのエスケープ（\", \\, \n, \uXXXX 等）を一括で正しく解除する。
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && Array.isArray(parsed.charts)) {
+          const chart = parsed.charts.find(function (c) { return c && c.chart_html; });
+          if (chart) {
+            console.log('[extractHtml] path=JSON.charts ok, html head:', chart.chart_html.slice(0, 80));
+            return chart.chart_html;
+          }
+        }
+        if (parsed && typeof parsed.chart_html === 'string') {
+          console.log('[extractHtml] path=JSON.chart_html ok');
+          return parsed.chart_html;
+        }
+      } catch (e) {
+        console.log('[extractHtml] JSON.parse failed:', e.message);
+      }
 
-      // コードブロック内を優先
+      // 【ケースB】生の HTML がテキストに混ざっているフォールバック。
+      // \", \\, \n の順で安全にアンエスケープする（順序が逆だと壊れる）。
+      const unescaped = jsonStringUnescape(text);
+
       const codeBlock = unescaped.match(/```(?:html)?\s*((?:<!DOCTYPE|<html)[\s\S]*?<\/html>)\s*```/i);
-      if (codeBlock) return codeBlock[1];
+      if (codeBlock) { console.log('[extractHtml] path=regex codeBlock'); return codeBlock[1]; }
 
-      // <!DOCTYPE html>... 形式
       const doctype = unescaped.match(/(<!DOCTYPE[\s\S]*?<\/html>)/i);
-      if (doctype) return doctype[1];
+      if (doctype) { console.log('[extractHtml] path=regex doctype'); return doctype[1]; }
 
-      // <html>...</html> 形式（MCPサーバーの出力）
       const htmlTag = unescaped.match(/(<html[\s\S]*?<\/html>)/i);
-      if (htmlTag) return htmlTag[1];
+      if (htmlTag) { console.log('[extractHtml] path=regex htmlTag'); return htmlTag[1]; }
 
+      console.log('[extractHtml] no match');
       return null;
+    }
+
+    /**
+     * JSON 文字列内に現れる代表的なエスケープを一括で解除する。
+     * 単純な順次 replace は順序ミスで壊れるため、1パスで処理する。
+     */
+    function jsonStringUnescape(s) {
+      return s.replace(/\\(u[0-9a-fA-F]{4}|.)/g, function (_, ch) {
+        if (ch[0] === 'u') return String.fromCharCode(parseInt(ch.slice(1), 16));
+        switch (ch) {
+          case 'n': return '\n';
+          case 't': return '\t';
+          case 'r': return '\r';
+          case '"': return '"';
+          case "'": return "'";
+          case '\\': return '\\';
+          case '/': return '/';
+          case 'b': return '\b';
+          case 'f': return '\f';
+          default: return ch;
+        }
+      });
     }
 
     /**
